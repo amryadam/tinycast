@@ -1,0 +1,87 @@
+name: Build check
+
+# Throwaway branch only: runs the Definition of Done on GitHub, since the author's Mac has no Xcode.
+on:
+  push:
+    branches: [ci-build-check]
+
+permissions:
+  contents: read
+
+env:
+  BASE_SHA: 5a787533eceb9833e5cba4628433b21f67e97956
+
+jobs:
+  build:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 10
+
+      - name: Select Xcode 26
+        run: |
+          XCODE_PATH="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -n1)"
+          if [ -z "$XCODE_PATH" ]; then echo "::error::No Xcode 26.x on this runner"; exit 1; fi
+          echo "Using $XCODE_PATH"
+          echo "DEVELOPER_DIR=$XCODE_PATH/Contents/Developer" >> "$GITHUB_ENV"
+
+      - name: Build base (upstream main, before the change)
+        run: |
+          git worktree add "$RUNNER_TEMP/base" "$BASE_SHA"
+          cd "$RUNNER_TEMP/base"
+          xcodebuild -project Tinycast.xcodeproj -scheme Tinycast -configuration Debug \
+            -derivedDataPath "$RUNNER_TEMP/dd-base" CODE_SIGNING_ALLOWED=NO build \
+            > "$RUNNER_TEMP/base.log" 2>&1 \
+            || { grep -E "error:" "$RUNNER_TEMP/base.log" | sort -u || true; tail -40 "$RUNNER_TEMP/base.log"; exit 1; }
+          echo "Base build succeeded."
+
+      - name: Build head (with the change)
+        run: |
+          xcodebuild -project Tinycast.xcodeproj -scheme Tinycast -configuration Debug \
+            -derivedDataPath "$RUNNER_TEMP/dd-head" CODE_SIGNING_ALLOWED=NO build \
+            > "$RUNNER_TEMP/head.log" 2>&1 \
+            || { grep -E "error:" "$RUNNER_TEMP/head.log" | sort -u || true; tail -40 "$RUNNER_TEMP/head.log"; exit 1; }
+          echo "Head build succeeded."
+
+      # Compiler warnings only: tool log lines carry timestamps and PIDs that differ per build.
+      - name: Compare compiler warnings
+        run: |
+          norm() { { grep -E '\.swift:[0-9]+:[0-9]+: warning:' "$1" || true; } | sed -E 's#^.*/(Tinycast|Tests)/#\1/#; s#:[0-9]+:[0-9]+:#:#' | sort -u; }
+          norm "$RUNNER_TEMP/base.log" > "$RUNNER_TEMP/base.warn"
+          norm "$RUNNER_TEMP/head.log" > "$RUNNER_TEMP/head.warn"
+          echo "Compiler warnings — base: $(wc -l < "$RUNNER_TEMP/base.warn" | tr -d ' ')  head: $(wc -l < "$RUNNER_TEMP/head.warn" | tr -d ' ')"
+          echo "All 'warning:' lines — base: $(grep -c 'warning:' "$RUNNER_TEMP/base.log" || true)  head: $(grep -c 'warning:' "$RUNNER_TEMP/head.log" || true)"
+          NEW="$(comm -13 "$RUNNER_TEMP/base.warn" "$RUNNER_TEMP/head.warn")"
+          if [ -n "$NEW" ]; then echo "::error::New compiler warnings from the change"; echo "$NEW"; exit 1; fi
+          echo "No new compiler warnings."
+
+  test:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Select Xcode 26
+        run: |
+          XCODE_PATH="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -n1)"
+          if [ -z "$XCODE_PATH" ]; then echo "::error::No Xcode 26.x on this runner"; exit 1; fi
+          echo "DEVELOPER_DIR=$XCODE_PATH/Contents/Developer" >> "$GITHUB_ENV"
+
+      - name: Run the harnesses
+        run: ./Scripts/run-tests.sh
+
+      - name: Lint
+        if: always()
+        env:
+          SWIFTLINT_REPORTER: github-actions-logging
+        run: |
+          command -v swiftlint >/dev/null || brew install swiftlint
+          ./Scripts/lint.sh
+
+      - name: Pure-layer purity
+        if: always()
+        run: |
+          if grep -rln 'import AppKit\|import SwiftUI\|import Cocoa' Tinycast/Features/*/Model/; then
+            echo "::error::A Model/ file imports a UI framework"; exit 1
+          fi
+          echo "Purity clean."
