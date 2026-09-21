@@ -1,0 +1,70 @@
+name: Dev build
+
+# Throwaway branch only: packages Tinycast Dev.app with the change ("after") and without it
+# ("before", upstream main) for a side-by-side video. Release-optimized under the Dev bundle id,
+# the way release.yml builds its channels: `development` never updates itself, and both variants
+# share one set of prefs and history, so the two recordings show the same entries.
+on:
+  push:
+    branches: [dev-build]
+
+permissions:
+  contents: read
+
+env:
+  BASE_SHA: 5a787533eceb9833e5cba4628433b21f67e97956
+
+jobs:
+  package:
+    runs-on: macos-26
+    strategy:
+      matrix:
+        variant: [after, before]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 10
+
+      - name: Check out upstream main
+        if: matrix.variant == 'before'
+        run: git checkout --detach "$BASE_SHA"
+
+      - name: Select Xcode 26
+        run: |
+          XCODE_PATH="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -n1)"
+          if [ -z "$XCODE_PATH" ]; then echo "::error::No Xcode 26.x on this runner"; exit 1; fi
+          echo "Using $XCODE_PATH"
+          echo "DEVELOPER_DIR=$XCODE_PATH/Contents/Developer" >> "$GITHUB_ENV"
+
+      - name: Build Tinycast Dev (Release, ad-hoc signed)
+        run: |
+          echo "Building $(git rev-parse --short HEAD) as the '${{ matrix.variant }}' variant"
+          xcodebuild -project Tinycast.xcodeproj -scheme Tinycast -configuration Release \
+            -derivedDataPath "$RUNNER_TEMP/dd" \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- \
+            PRODUCT_NAME="Tinycast Dev" PRODUCT_BUNDLE_IDENTIFIER=com.tinycast.app.dev \
+            build > "$RUNNER_TEMP/build.log" 2>&1 \
+            || { grep -E "error:" "$RUNNER_TEMP/build.log" | sort -u || true; tail -60 "$RUNNER_TEMP/build.log"; exit 1; }
+          echo "Build succeeded."
+
+      - name: Verify the bundle
+        run: |
+          APP="$RUNNER_TEMP/dd/Build/Products/Release/Tinycast Dev.app"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          codesign -dv "$APP" 2>&1 | grep -E "^(Identifier|Signature|CodeDirectory)"
+          test -x "$APP/Contents/Helpers/ClipboardTextHelper" && echo "OCR helper embedded."
+          echo "App arch: $(lipo -archs "$APP/Contents/MacOS/Tinycast Dev")"
+
+      # ditto keeps the bundle's symlinks, modes and signature; upload-artifact alone drops modes.
+      - name: Zip
+        run: |
+          cd "$RUNNER_TEMP/dd/Build/Products/Release"
+          ditto -c -k --keepParent "Tinycast Dev.app" "$RUNNER_TEMP/Tinycast-Dev-${{ matrix.variant }}.zip"
+          shasum -a 256 "$RUNNER_TEMP/Tinycast-Dev-${{ matrix.variant }}.zip"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Tinycast-Dev-${{ matrix.variant }}
+          path: ${{ runner.temp }}/Tinycast-Dev-${{ matrix.variant }}.zip
+          retention-days: 7
