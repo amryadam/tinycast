@@ -38,7 +38,8 @@ test_validate_rejects() {
         return
     }
     for bad in "1.0.0" "1.0.0-fork" "1.0.0-fork.x" "1.0.0-fork.1; rm -rf ~" $'1.0.0-fork.1\n' \
-        " 1.0.0-fork.1" "" "v1.0.0-fork.1" "1.0-fork.1" "1.0.0-fork.1 "; do
+        " 1.0.0-fork.1" "" "v1.0.0-fork.1" "1.0-fork.1" "1.0.0-fork.1 " \
+        "0.12.11-fork.08" "00.1.1-fork.1" "0.012.11-fork.1" "0.12.11-fork.0" "1.0.0-fork.01"; do
         if "$ROOT/Scripts/fork-release-validate.sh" "$bad" > /dev/null 2>&1; then
             fail "accepted '$bad'"
         fi
@@ -733,6 +734,14 @@ test_next_version() {
     for bad in "0.12.11-fork.1" "v0.12.11" "v0.12.11-fork" "v0.12.11-fork.x" "v0.12.11-beta.1"; do
         out="$("$script" 0.12.11 "$bad" 2>&1)" && fail "accepted the tag '$bad': $out"
     done
+    for bad in "0.012.1" "01.2.3"; do
+        "$script" "$bad" > /dev/null 2>&1 && fail "accepted the base with a leading zero '$bad'"
+    done
+    for bad in "v0.12.11-fork.08" "v0.12.11-fork.0" "v00.12.11-fork.1"; do
+        "$script" 0.12.11 "$bad" > /dev/null 2>&1 && fail "accepted the tag with a leading zero or zero '$bad'"
+    done
+    [ "$("$script" 0.9.0 v0.10.0-fork.1)" = "0.10.0-fork.2" ] || fail "0.10.0 must be higher than 0.9.0"
+    [ "$("$script" 0.12.11 v0.12.11-fork.9 v0.12.11-fork.10)" = "0.12.11-fork.11" ] || fail "10 must follow 9"
     "$script" > /dev/null 2>&1 && fail "accepted no arguments"
     return 0
 }
@@ -783,6 +792,17 @@ test_sync_merge() {
     [ -z "$(cd "$d-wf" && git diff --name-only "$dev" HEAD -- .github)" ] || fail ".github must equal dev's after the merge"
     [ ! -e "$d-wf/.github/workflows/new.yml" ] || fail "an upstream workflow must not land"
     grep -q more "$d-wf/Tinycast/Core.swift" || fail "the rest of upstream must still merge"
+
+    # dev deleted a workflow and upstream edited it: a modify/delete conflict inside .github.
+    make_sync_repo "$d-md"
+    on_branch "$d-md" dev bash -c 'git rm -q .github/workflows/up.yml; echo fork > fork.txt'
+    on_branch "$d-md" up bash -c 'echo edited > .github/workflows/up.yml; echo more >> Tinycast/Core.swift'
+    (cd "$d-md" && gitq checkout -q dev)
+    dev="$(cd "$d-md" && git rev-parse HEAD)"
+    out="$(cd "$d-md" && GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t "$script" dev up 2>&1)" \
+        || fail "a modify/delete conflict inside .github crashed the merge: $out"
+    [ -z "$(cd "$d-md" && git diff --name-only "$dev" HEAD -- .github)" ] || fail ".github must still equal dev's after a modify/delete conflict"
+    [ ! -e "$d-md/.github/workflows/up.yml" ] || fail "the workflow dev deleted must stay deleted"
 
     # Already up to date.
     make_sync_repo "$d-same"

@@ -20,8 +20,9 @@ die() {
     exit 1
 }
 
-base_re='^([0-9]+)\.([0-9]+)\.([0-9]+)$'
-tag_re='^v([0-9]+\.[0-9]+\.[0-9]+)-fork\.([0-9]+)$'
+num='(0|[1-9][0-9]*)'
+base_re="^$num\\.$num\\.$num\$"
+tag_re="^v($num\\.$num\\.$num)-fork\\.([1-9][0-9]*)\$"
 
 [[ "$1" =~ $base_re ]] || die "'$1' is not a version like 0.12.12"
 upstream="$1"
@@ -48,8 +49,8 @@ done
 highest=0
 for tag in "$@"; do
     [[ "$tag" =~ $tag_re ]]
-    if [ "${BASH_REMATCH[1]}" = "$top" ] && [ "${BASH_REMATCH[2]}" -gt "$highest" ]; then
-        highest="${BASH_REMATCH[2]}"
+    if [ "${BASH_REMATCH[1]}" = "$top" ] && [ "${BASH_REMATCH[5]}" -gt "$highest" ]; then
+        highest="${BASH_REMATCH[5]}"
     fi
 done
 

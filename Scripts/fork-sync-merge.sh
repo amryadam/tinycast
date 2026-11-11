@@ -49,9 +49,9 @@ if git ls-tree -r --name-only "$dev" -- .github | grep -q .; then
 fi
 while IFS= read -r -d '' file; do
     if [ -z "$(git ls-tree --name-only "$dev" -- "$file")" ]; then
-        git rm -q -f -- "$file"
+        git rm -q -f --ignore-unmatch -- "$file"
     fi
-done < <(git ls-files -z -- .github)
+done < <(git ls-files -z --deduplicate -- .github)
 
 pbx=Tinycast.xcodeproj/project.pbxproj
 if unmerged | grep -qx "$pbx" && ! unmerged | grep -qx project.yml && command -v xcodegen > /dev/null; then
