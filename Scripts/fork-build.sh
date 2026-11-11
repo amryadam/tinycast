@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds the fork as its own app: its own bundle id and link scheme, and the name Tinycast.
+# Builds the fork as its own app: its own bundle id and link scheme, and the name Tinycast Fork.
 #
 #   ./Scripts/fork-build.sh          # Release
 #   ./Scripts/fork-build.sh Debug
@@ -16,7 +16,7 @@ export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Develope
 CONFIG="${1:-Release}"
 BUNDLE_ID="${FORK_BUNDLE_ID:-com.amryadam.tinycast}"
 URL_SCHEME="${FORK_URL_SCHEME:-tinycast-amryadam}"
-APP_NAME="${FORK_APP_NAME:-Tinycast}"
+APP_NAME="${FORK_APP_NAME:-Tinycast Fork}"
 IDENTITY="Tinycast Self-Signed"
 DERIVED="${FORK_BUILD_DIR:-$HOME/Library/Caches/tinycast-fork/DerivedData}"
 
