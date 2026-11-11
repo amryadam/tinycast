@@ -179,8 +179,50 @@ test_package_authority() {
     return 0
 }
 
+test_notes_licence_items() {
+    local sha=0123456789abcdef0123456789abcdef01234567 out title today
+    [ -x "$ROOT/Scripts/fork-release-notes.sh" ] || {
+        fail "Scripts/fork-release-notes.sh is missing or not executable"
+        return
+    }
+    out="$("$ROOT/Scripts/fork-release-notes.sh" 0.12.11-fork.1 "$sha" amryadam/tinycast)" || {
+        fail "the notes script failed"
+        return
+    }
+    today="$(date -u +%Y-%m-%d)"
+    for needle in "unofficial" "not affiliated" "modified version of Tinycast" "Abue Ammar" \
+        "AGPL-3.0-or-later" "$today" "$sha" \
+        "https://github.com/abue-ammar/tinycast/commit/$sha" \
+        "https://github.com/amryadam/tinycast/tree/v0.12.11-fork.1" \
+        "https://github.com/amryadam/tinycast/blob/v0.12.11-fork.1/LICENSE" \
+        "path-query" "brew tap amryadam/fork" "brew install --cask amryadam/fork/tinycast-fork" \
+        "Privacy & Security"; do
+        assert_contains "$out" "$needle"
+    done
+    while IFS= read -r title; do
+        assert_contains "$out" "$title"
+    done < <(sed -n 's/^# Feature: *//p' "$ROOT"/docs/fork/*.md)
+}
+
+test_notes_rejects() {
+    local sha=0123456789abcdef0123456789abcdef01234567
+    [ -x "$ROOT/Scripts/fork-release-notes.sh" ] || {
+        fail "Scripts/fork-release-notes.sh is missing or not executable"
+        return
+    }
+    "$ROOT/Scripts/fork-release-notes.sh" 1.0.0 "$sha" amryadam/tinycast > /dev/null 2>&1 \
+        && fail "accepted a version without -fork.N"
+    "$ROOT/Scripts/fork-release-notes.sh" 0.12.11-fork.1 notasha amryadam/tinycast > /dev/null 2>&1 \
+        && fail "accepted a malformed sha"
+    "$ROOT/Scripts/fork-release-notes.sh" 0.12.11-fork.1 "$sha" 'amryadam/tinycast;x' > /dev/null 2>&1 \
+        && fail "accepted a malformed repository"
+    "$ROOT/Scripts/fork-release-notes.sh" 0.12.11-fork.1 "$sha" > /dev/null 2>&1 \
+        && fail "accepted a missing repository"
+    return 0
+}
+
 ALL=(validate_accepts validate_rejects build_print_settings import_requires_env import_cleanup_is_safe
-    package_ok package_rejects package_authority)
+    package_ok package_rejects package_authority notes_licence_items notes_rejects)
 
 if [ $# -gt 0 ]; then
     names=("$@")
