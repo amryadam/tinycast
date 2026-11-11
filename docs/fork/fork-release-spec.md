@@ -4,17 +4,18 @@ Feature spec for building, publishing and installing the [amryadam/tinycast](htt
 The implementation plan is [fork-release-plan.md](fork-release-plan.md).
 The feature's change log is [fork-release.md](fork-release.md), and the fork's rules are in [README.md](README.md).
 It builds on [fork-identity.md](fork-identity.md), which gives the app its own bundle id and name.
+Revision 2: updated after an independent Opus review at high effort.
 
 ## Contents
 
 - [Goal](#goal)
 - [Non-goals](#non-goals)
 - [Overview](#overview)
-- [The signing identity as a secret](#the-signing-identity-as-a-secret)
+- [Environments and secrets](#environments-and-secrets)
 - [The workflow](#the-workflow)
 - [Versions, tags and notes](#versions-tags-and-notes)
 - [Packaging](#packaging)
-- [The cask](#the-cask)
+- [The cask and the tap](#the-cask-and-the-tap)
 - [Safety controls](#safety-controls)
 - [Verified and unverified](#verified-and-unverified)
 - [Risks](#risks)
@@ -23,7 +24,7 @@ It builds on [fork-identity.md](fork-identity.md), which gives the app its own b
 
 ## Goal
 
-A release of the fork is built and signed on GitHub from a tagged commit, published on the fork's release page, and installable and upgradable with Homebrew.
+A release of the fork is built and signed on GitHub from a commit on `dev`, published on the fork's release page, and installable and upgradable with Homebrew.
 No build runs on the user's Mac, and the user's keychain is never touched.
 
 ## Non-goals
@@ -32,34 +33,41 @@ No build runs on the user's Mac, and the user's keychain is never touched.
 |---|---|
 | Apple notarisation | It needs a paid Developer ID. A self-signed app is blocked by Gatekeeper until the user approves it once. |
 | In-app auto-update | The bundle id is unknown to upstream, so the app is a development build that never updates itself. Homebrew upgrades it. |
-| A DMG or a universal binary | The cask installs a zip, and the user's Mac is Apple silicon. |
-| Running upstream's workflows | They need upstream's secrets and runner, and would fail or mirror elsewhere. |
+| A DMG or a universal binary | The cask installs a zip, and the runner and the user's Mac are Apple silicon. |
+| Running upstream's workflows | They need upstream's secrets and tap, and are disabled on the fork. |
+| A fork notice in the About screen | A separate change, listed under Risks. |
 | Upstreaming | The maintainer declined the feature. |
 
 ## Overview
 
 | Stage | Where | Result |
 |---|---|---|
-| 1. One-time identity | The user's Mac, never the keychain | A self-signed signing identity, uploaded as two repository secrets. |
-| 2. Dry run | GitHub, `publish` off | A signed zip as a workflow artifact, with nothing published. |
-| 3. Release | GitHub, `publish` on | A GitHub release with the zip, and an updated cask. |
+| 1. Bootstrap | The user's Mac, never the keychain | Two environments, a tap repository with a deploy key, and the signing identity stored as secrets. |
+| 2. Dry run | GitHub, `publish` off | A signed zip as a one-day workflow artifact, with nothing published. |
+| 3. Release | GitHub, `publish` on | A GitHub release with the zip, and an updated cask in the tap. |
 | 4. Install | The user's Mac | `brew tap` and `brew install --cask`. |
 
-## The signing identity as a secret
+## Environments and secrets
 
-- A script generates a key and a self-signed certificate named `Tinycast Self-Signed` in a private temporary folder, packs them into a password-protected `.p12`, and uploads it with `gh secret set`.
-- The key is never imported into any keychain, and the temporary files are deleted on exit.
+Repository-level secrets can be read by a workflow on any branch, so secrets live in environments that only `dev` may use.
+
+| Environment | Branch policy | Secret | Holds | Used by |
+|---|---|---|---|---|
+| `fork-build` | `dev` only | `SIGNING_P12_BASE64` | The signing identity, as a base64 `.p12` | The build job |
+| `fork-build` | `dev` only | `SIGNING_P12_PASSWORD` | A random password for that file | The build job |
+| `fork-publish` | `dev` only | `TAP_DEPLOY_KEY` | The private half of a write deploy key for the tap repository | The publish job |
+
+- A bootstrap script creates the environments and their branch policies, generates the identity and the deploy key in a private temporary folder, uploads them, and deletes the files on exit.
+- The identity is never imported into any keychain.
 - The same identity must be used for every release, because macOS remembers permissions against the signature.
+- The script refuses to run when the secrets already exist, unless given `--force`, because replacing the identity makes macOS forget every permission.
 - GitHub cannot return a secret's value, so losing the secret means making a new identity, after which the user grants permissions again.
-
-| Secret | Holds |
-|---|---|
-| `SIGNING_P12_BASE64` | The identity, as a base64 `.p12` |
-| `SIGNING_P12_PASSWORD` | A random password for that file |
+- The identity made locally by `fork-signing-identity.sh` is a different key with the same name. A copy built locally and a copy built on GitHub will not share permissions, so the user installs the GitHub build and does not alternate.
 
 ## The workflow
 
 File: `.github/workflows/fork-release.yml`, a new file, so it cannot conflict with upstream.
+GitHub starts a manual run only when the file is on the default branch, so `dev` becomes the fork's default branch.
 
 ```yaml
 name: Fork release
@@ -72,8 +80,7 @@ on:
       publish:   # false builds and uploads an artifact only
         type: boolean
         default: false
-permissions:
-  contents: write
+permissions: {}
 concurrency:
   group: fork-release
   cancel-in-progress: false
@@ -81,23 +88,49 @@ jobs:
   build:
     if: github.ref == 'refs/heads/dev'
     runs-on: xcode-27
+    environment: fork-build
+    permissions:
+      contents: read
+  publish:
+    if: inputs.publish
+    needs: build
+    runs-on: ubuntu-latest
+    environment: fork-publish
+    permissions:
+      contents: write
 ```
+
+### The build job
+
+It holds the signing key and can read the repository, but cannot write to it.
 
 | Step | Detail |
 |---|---|
-| Validate | `version` must match `^[0-9]+\.[0-9]+\.[0-9]+-fork\.[0-9]+$`, and the tag `v<version>` must not exist. |
-| Checkout | Full history, because the notes need the merge base with upstream. |
+| Validate | `Scripts/fork-release-validate.sh` accepts only `^[0-9]+\.[0-9]+\.[0-9]+-fork\.[0-9]+$`. |
+| Checkout | Full history, `persist-credentials: false`. |
+| Tag check | `gh api` fails the run when `v<version>` already exists. |
 | Select Xcode | The newest real `Xcode_27.x` folder, as upstream's workflow does. |
-| Gate | `./Scripts/fork-check.sh` and `./Scripts/run-tests.sh file-search-path-test`. |
-| Import identity | Create a temporary keychain, import the `.p12`, allow `codesign`, and add it to the search list. |
-| Build | `./Scripts/fork-build.sh Release`, with the version and build number from the inputs. |
-| Package | `./Scripts/fork-package.sh`, which verifies the bundle and writes the zip and its SHA-256. |
-| Upload | The zip as a workflow artifact, always. |
-| Publish | Only when `publish` is on: the release, then the cask update. |
-| Clean up | Always delete the temporary keychain and the `.p12`. |
+| Gate | `FORK_BASE=origin/main ./Scripts/fork-check.sh` and `./Scripts/run-tests.sh file-search-path-test`. |
+| Import identity | `Scripts/fork-import-identity.sh`: a temporary keychain, unlocked, with the `.p12` imported, the key opened to `codesign` through a partition list, and the keychain on the search list. |
+| Build | `./Scripts/fork-build.sh Release`, with the version and the run number. |
+| Package | `Scripts/fork-package.sh`, which verifies the bundle and writes the zip and its SHA-256. |
+| Lint the cask | Generate the cask for this version and run `brew style` and `brew audit --cask --strict` on the runner. |
+| Upload | The zip and its checksum as an artifact kept for one day. |
+| Clean up | `if: always()`: delete the temporary keychain from the list and from disk, and the `.p12`. |
 
-Actions are pinned to a full version.
-Secrets are read only by the import step.
+### The publish job
+
+It can write releases, and never sees the signing key.
+
+| Step | Detail |
+|---|---|
+| Checkout and download | The repository for its scripts, and the build job's artifact. |
+| Verify | The zip's SHA-256 equals the build job's. |
+| Release | `gh release create "v$VERSION" --target "$GITHUB_SHA" --latest`, with the zip, its checksum, and generated notes. |
+| Tap | Clone the tap with the deploy key, write the cask, commit as `github-actions[bot]`, and push, retrying a rebase up to three times and never forcing. |
+| Clean up | `if: always()`: delete the key file. |
+
+Actions are pinned to a full commit SHA, and secrets are read only from `env:`.
 
 ## Versions, tags and notes
 
@@ -108,17 +141,17 @@ Secrets are read only by the import step.
 | `MARKETING_VERSION` | The part before `-fork`, so `0.12.11` |
 | `CURRENT_PROJECT_VERSION` | `github.run_number` |
 | Release title | `Tinycast Fork 0.12.11-fork.1` |
-| Notes | Generated by `Scripts/fork-release-notes.sh`, described below |
+| Notes | Generated by `Scripts/fork-release-notes.sh` |
 
 The notes carry the licence obligations of the AGPL-3.0-or-later:
 
-- a statement that this is a modified version of Tinycast by Abue Ammar, with the date;
-- the upstream commit it is based on;
+- a statement that this is an unofficial, modified version of Tinycast by Abue Ammar, not affiliated with it, with the date;
+- the upstream commit it is based on, taken from the merge base with `origin/main`;
 - the list of fork features, taken from the `# Feature:` titles in `docs/fork/*.md`;
 - a link to the exact source at the tag, and to the licence;
 - the install commands, and the one-time Gatekeeper approval.
 
-The fork stays public, so the source at the tag is always available from the same place as the binary.
+The fork stays public, so the source at the tag is available from the same place as the binary.
 
 ## Packaging
 
@@ -128,13 +161,16 @@ The fork stays public, so the source at the tag is always available from the sam
 | Bundle id | `com.amryadam.tinycast` |
 | Version | `CFBundleShortVersionString` equals `MARKETING_VERSION` |
 | Signature | `codesign --verify --deep --strict` passes |
-| Signer | The authority is `Tinycast Self-Signed` |
+| Signer | With `--require-authority`, the authority is `Tinycast Self-Signed`, and a different signer is refused |
 
-The zip is made with `ditto -c -k --keepParent` so resource forks and symlinks survive, and is named `Tinycast-Fork-<version>.zip`.
+The zip is built from a staging folder that holds `Tinycast Fork.app`, `LICENSE` and `NOTICE.md` at its root, with `ditto -c -k --sequesterRsrc`.
+The licence text therefore travels with the binary, and the cask still installs only the app.
+It is named `Tinycast-Fork-<version>.zip`.
 
-## The cask
+## The cask and the tap
 
-File: `Casks/tinycast-fork.rb`, generated by `Scripts/fork-cask.sh` from the version and the zip's SHA-256.
+The tap is a separate public repository, `amryadam/homebrew-fork`, so a plain `brew tap amryadam/fork` works.
+Upstream uses the same pattern, with a personal access token where this uses a deploy key.
 
 ```ruby
 cask "tinycast-fork" do
@@ -143,21 +179,27 @@ cask "tinycast-fork" do
 
   url "https://github.com/amryadam/tinycast/releases/download/v#{version}/Tinycast-Fork-#{version}.zip"
   name "Tinycast Fork"
+  desc "Unofficial fork of the Tinycast launcher"
   homepage "https://github.com/amryadam/tinycast"
 
   livecheck do
     url :url
     strategy :github_latest
+    regex(/^v?(\d+(?:\.\d+)+-fork\.\d+)$/i)
   end
 
-  depends_on macos: ">= :tahoe"
+  depends_on arch: :arm64
+  depends_on macos: :tahoe
 
   app "Tinycast Fork.app"
+
+  uninstall quit: "com.amryadam.tinycast"
 
   zap trash: [
     "~/.config/com.amryadam.tinycast",
     "~/Library/Application Support/com.amryadam.tinycast",
     "~/Library/Caches/com.amryadam.tinycast",
+    "~/Library/Caches/com.amryadam.tinycast.dictation",
     "~/Library/Preferences/com.amryadam.tinycast.plist",
   ]
 end
@@ -165,73 +207,80 @@ end
 
 | Item | Detail |
 |---|---|
-| Tap | The fork repository itself, tapped with `brew tap amryadam/fork https://github.com/amryadam/tinycast`. Homebrew allows any URL in the two-argument form. |
-| Install | `brew install --cask amryadam/fork/tinycast-fork` |
+| Install | `brew tap amryadam/fork`, then `brew install --cask amryadam/fork/tinycast-fork` |
 | Upgrade | `brew upgrade --cask tinycast-fork` |
-| Default branch | The fork's default branch becomes `dev`, because Homebrew clones the default branch and the cask lives there. |
-| Updating the cask | The workflow commits the new cask to `dev` with the built-in token, with no personal access token. |
 | Coexistence | The token and the app name differ from the official `tinycast` cask, so both can be installed. |
-| Gatekeeper | The cask does not remove the quarantine. The first launch needs a one-time approval in System Settings, Privacy and Security. |
+| Shared folders | The cask does not zap `~/Library/Caches/ClipboardTextHelper`, which both apps use. |
+| Gatekeeper | The cask does not remove the quarantine. The first launch needs a one-time approval in System Settings, Privacy and Security. Homebrew carries that approval across upgrades while the signature stays the same. |
+| Recovery | If the release exists but the tap push failed, `Scripts/fork-cask.sh --from-release VERSION` regenerates the cask and the user pushes it by hand. A run for an existing tag fails by design. |
 
 ## Safety controls
 
 | Control | Effect |
 |---|---|
 | Dispatch only | No push, pull request or schedule can start it. |
-| `dev` only | The job refuses to run from any other branch. |
+| `dev` only | The job refuses other branches, and the environments reject them too, so another branch's workflow cannot read the secrets. |
+| Two jobs | The job that holds the signing key cannot write, and the job that can write has no signing key. |
 | `publish` defaults to off | A first run proves the build without publishing anything. |
 | Tag collision | An existing tag stops the run before anything is built. |
-| Least permission | `contents: write` and nothing else. The secrets reach one step. |
-| Cleanup | The temporary keychain and key file are deleted even when a step fails. |
-| Upstream workflows | Each of upstream's workflows is disabled on the fork with `gh workflow disable`, so none runs on a schedule or a push. |
-| Logs | Secrets are masked by GitHub, and the scripts never print key material. |
+| Input validation | A tested script rejects any version that is not the exact pattern, and the value is read from `env:`, never from an inline expression. |
+| Pinned actions | Each `uses:` is a full commit SHA. |
+| No stored git credentials | `persist-credentials: false` on every checkout. |
+| Cleanup | The keychain, the `.p12` and the deploy key file are deleted even when a step fails. |
+| Upstream workflows | Each is disabled on the fork with `gh workflow disable`, and the user re-checks `gh workflow list --all` after every upstream sync. |
+| Syncing | Always `gh repo sync -b main`. The default branch is `dev`, and a sync without `-b` would act on it. |
+| Short artifact life | The artifact is kept one day, since anyone signed in to GitHub can download a public repository's artifacts. |
+| Logs | GitHub masks secrets, and the scripts never print key material. |
 
 ## Verified and unverified
 
 | Claim | State |
 |---|---|
-| The `xcode-27` image carries Xcode 27.2, the version used locally. | Verified in the runner-images readme |
+| `xcode-27` is a standard GitHub-hosted label with Xcode 27.2, and `macos-26` has only Xcode 26. | Verified by the review from the runner-images repository |
 | Upstream's release job runs on `xcode-27`. | Verified |
-| `brew tap <name> <URL>` accepts any repository. | Verified in `brew tap --help` |
-| `:tahoe` is a valid macOS symbol in this Homebrew, and the app needs macOS 26.0. | Verified |
+| `:tahoe` is a valid macOS symbol, and the app needs macOS 26.0. | Verified |
 | The user's `gh` token has the `workflow` scope. | Verified |
-| The fork has Actions enabled and no workflows registered yet. | Verified |
-| The fork's `xcode-27` runner is available to a free public fork. | Unverified. The dry run answers it. |
-| `xcodebuild` signs with an identity imported into a temporary keychain on that runner. | Unverified. The dry run answers it. |
-| The cask passes `brew style` and `brew audit`. | Unverified until the plan's cask task |
-| The listed `zap` folders are the app's complete data. | Partly verified from `AppPaths.swift`. The app has not been run. |
-| macOS lets a user approve a quarantined, self-signed app. | Unverified, because it needs a Mac with the build |
+| A self-signed signature keeps a stable designated requirement while the certificate is the same. | Verified from a signed sample app |
+| The system LibreSSL makes `.p12` files that `security import` accepts. | Verified |
+| `brew style` rejects `depends_on macos: ">= :tahoe"` and wants `:tahoe`. | Verified by the review |
+| A job on the `xcode-27` runner starts for this fork. | Unverified. The dry run answers it. |
+| `xcodebuild` accepts the untrusted identity on that runner. | Unverified. The dry run answers it. |
+| The cask passes `brew audit --cask --strict`. | Unverified until the build job's lint step runs |
+| The nested `Tinycast Dictation.app` needs no second Gatekeeper approval. | Unverified, because it needs a Mac with the build |
+| Scheduled upstream workflows run on a fork. | Unverified. They are disabled either way. |
 
 ## Risks
 
 | Risk | Mitigation |
 |---|---|
-| The `xcode-27` label is not available to the fork, so the job queues forever. | The dry run is the first step. If it fails, the fallback is a local build with a keychain identity. |
-| The key is exposed to anyone with write access to the repository. | The certificate is trusted by nothing, and the user can revoke by deleting the secrets. |
-| The workflow commits to `dev`, so a local `dev` can diverge. | The cask file is changed only by the workflow, and the user runs `git pull` on `dev` before pushing. |
+| The `xcode-27` runner queues for a long time, as a preview image. | The dry run shows it. The fallback is a local build with a keychain identity. |
+| The key is exposed to anyone who can push to `dev`. | The certificate is trusted by nothing, the environments allow only `dev`, and deleting the secrets revokes it. |
+| The identity is lost or replaced. | The script refuses to overwrite, and a new identity means granting permissions again. |
 | A published release cannot be fully retracted from caches. | `publish` is off by default, and the first release is a deliberate step. |
 | A user installs a build that macOS has not notarised. | The notes say so, and the cask leaves the approval to the user. |
-| The AGPL obligations are missed. | The notes are generated, and a test checks they contain each required item. |
+| The About screen says "© Abue Ammar, AGPL-3.0" and links to upstream's GitHub, email and Discord, with no modification notice, and fork users would report bugs to a maintainer who declined the feature. | A small follow-up change with a `FORK(fork-release)` hook. Section 5(a) of the AGPL wants the notice in the work itself, so this should be done before the release is shared widely. |
+| Making `dev` the default branch changes what "Sync fork" does. | The rule above, and the README says it. |
 
 ## Decisions
 
 | Id | Decision | State |
 |---|---|---|
-| D1 | The tap is the fork repository itself, with `dev` as its default branch, instead of a second repository with a personal access token. | Recommended, awaiting the user |
+| D1 | The tap is a separate public repository `amryadam/homebrew-fork`, pushed to with a deploy key, and `dev` is the fork's default branch. | Recommended by the review, awaiting the user |
 | D2 | The cask does not remove the quarantine. | Recommended, awaiting the user |
-| D3 | The identity is uploaded as secrets by a script that never uses the keychain. | Approved as the GitHub route |
+| D3 | The identity is uploaded as environment secrets by a script that never uses the keychain, and never overwrites without `--force`. | Approved as the GitHub route |
 | D4 | Upstream's workflows are disabled individually. | Recommended, awaiting the user |
 | D5 | The first run has `publish` off. | Recommended |
 | D6 | Cask `tinycast-fork`, tag `v0.12.11-fork.1`, release title `Tinycast Fork 0.12.11-fork.1`. | Recommended |
+| D7 | Do the About-screen fork notice before sharing the release widely. | Recommended, awaiting the user |
 
 ## Acceptance criteria
 
 | Check | Pass condition |
 |---|---|
-| Script tests | Each script has a test that passes, and `shellcheck` is clean. |
-| Cask | `brew style` and `brew audit --cask --strict` pass on the generated file. |
+| Script tests | `./Scripts/fork-test.sh` passes, and `shellcheck` is clean. |
+| Workflow | `actionlint` is clean, and structural checks pass. |
 | Notes | The generated notes contain every item in the licence list above. |
-| Dry run | The workflow succeeds with `publish` off, and the artifact's signature, bundle id and version verify on the user's Mac. |
-| Release | The release has the zip and notes, and the cask on `dev` points at it with the right SHA-256. |
+| Dry run | The workflow succeeds with `publish` off, and the artifact's signature, signer, bundle id and version verify on the user's Mac. |
+| Release | The release has the zip, its checksum and the notes, and the tap's cask names the same version and SHA-256. |
 | Install | `brew install --cask amryadam/fork/tinycast-fork` installs `Tinycast Fork.app` beside the official app. |
 | `fork-check` | Exits 0. |
