@@ -2,12 +2,17 @@ import Foundation
 
 /// The effect half of `FileSearchPathQuery`: probes the real filesystem and builds a Files row.
 enum FileSearchPathLookup {
-    // Only path-shaped text reaches the `stat`, so ordinary typing costs nothing.
-    static func result(for query: String, fileManager: FileManager = .default) -> FileSearchResult? {
+    // `isAllowed` is asked once, just before the first `stat`, so text that is no path never asks.
+    static func result(
+        for query: String, fileManager: FileManager = .default, isAllowed: () -> Bool = { true }
+    ) -> FileSearchResult? {
         let home = fileManager.homeDirectoryForCurrentUser
+        var allowed: Bool?
         let location = FileSearchPathQuery.resolve(query, homeDirectory: home.path) { path in
+            if allowed == nil { allowed = isAllowed() }
             var isDirectory: ObjCBool = false
-            guard fileManager.fileExists(atPath: path, isDirectory: &isDirectory) else { return nil }
+            guard allowed == true, fileManager.fileExists(atPath: path, isDirectory: &isDirectory)
+            else { return nil }
             return isDirectory.boolValue ? .directory : .file
         }
         guard let location else { return nil }

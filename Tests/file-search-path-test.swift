@@ -183,6 +183,26 @@ struct FileSearchPathTests {
         expect(
             FileSearchPathLookup.result(for: folder.path + "/missing") == nil, "a missing path earns no row")
         expect(FileSearchPathLookup.result(for: "safari") == nil, "ordinary text earns no row")
+        var asked = 0
+        let denied = FileSearchPathLookup.result(
+            for: file.path,
+            isAllowed: {
+                asked += 1; return false
+            })
+        expect(denied == nil, "a denied lookup earns no row")
+        expect(asked == 1, "the gate is asked once for a path")
+        asked = 0
+        _ = FileSearchPathLookup.result(
+            for: "safari",
+            isAllowed: {
+                asked += 1; return true
+            })
+        _ = FileSearchPathLookup.result(
+            for: "",
+            isAllowed: {
+                asked += 1; return true
+            })
+        expect(asked == 0, "text that is no path never asks the gate")
         expect(FileSearchPathLookup.result(for: "/") == nil, "the root earns no row")
         expect(
             FileSearchPathLookup.result(for: NSHomeDirectory()) == nil, "the real home folder earns no row")

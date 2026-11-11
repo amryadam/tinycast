@@ -74,7 +74,9 @@ struct LauncherScreen: PaletteScreen {
             ? CalcMemo.evaluate(vm.query, rates: currencyRates.rates, format: core.calcNumberFormat) : nil
         // After the calculator: `#FF5733` is never arithmetic, so the two can't both answer.
         let color = calc == nil && pinned == nil ? ColorValue.parse(vm.query) : nil
-        let files = pinned == nil ? core.fileSearchCoordinator.launcherFiles(for: vm.query) : []
+        // FORK(path-query): lead with a pasted path.
+        let files =
+            pinned == nil ? core.fileSearchCoordinator.launcherFilesLeadingWithPastedPath(for: vm.query) : []
         let fallbacks = core.fallbackCoordinator.entries(for: vm.query)
         let pinsFavorites = vm.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let pinnedFavorites = favorites.orderedItems(
