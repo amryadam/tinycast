@@ -83,6 +83,23 @@ jobs:
           ./Scripts/fork-test.sh
           ./Scripts/run-tests.sh file-search-path-test
 
+      - name: Lint the cask
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_ANALYTICS: "1"
+        run: |
+          # Run before the signing key is imported, so Homebrew's gems never run beside the key.
+          # Homebrew audits a cask by name, and only from a tap it trusts, so use a throwaway local one.
+          brew tap-new --no-git local/fork-lint
+          brew trust --tap local/fork-lint
+          CASK="$(brew --repository local/fork-lint)/Casks/tinycast-fork.rb"
+          # Any well-formed checksum will do: style and an offline audit do not check it, and the
+          # real zip does not exist yet, because the signing key is not imported until after this.
+          SUM="0000000000000000000000000000000000000000000000000000000000000000"
+          FORK_REPO="$GITHUB_REPOSITORY" ./Scripts/fork-cask.sh "$VERSION" "$SUM" "$CASK"
+          brew style "$CASK"
+          brew audit --cask --strict local/fork-lint/tinycast-fork
+
       - name: Import the signing identity
         env:
           P12_BASE64: ${{ secrets.SIGNING_P12_BASE64 }}
@@ -104,19 +121,9 @@ jobs:
           SUM="$(./Scripts/fork-package.sh "$APP" "$VERSION" "$RUNNER_TEMP/out" --require-authority "Tinycast Self-Signed")"
           echo "sha256=$SUM" >> "$GITHUB_OUTPUT"
 
-      - name: Lint the cask
-        env:
-          HOMEBREW_NO_AUTO_UPDATE: "1"
-          HOMEBREW_NO_ANALYTICS: "1"
-        run: |
-          # Homebrew audits a cask by name, and only from a tap it trusts, so use a throwaway local one.
-          brew tap-new --no-git local/fork-lint
-          brew trust --tap local/fork-lint
-          CASK="$(brew --repository local/fork-lint)/Casks/tinycast-fork.rb"
-          SUM="$(cut -d' ' -f1 "$RUNNER_TEMP/out/Tinycast-Fork-$VERSION.zip.sha256")"
-          FORK_REPO="$GITHUB_REPOSITORY" ./Scripts/fork-cask.sh "$VERSION" "$SUM" "$CASK"
-          brew style "$CASK"
-          brew audit --cask --strict local/fork-lint/tinycast-fork
+      # The key is no longer needed, so the keychain goes before anything else runs.
+      - name: Remove the signing keychain
+        run: ./Scripts/fork-import-identity.sh --cleanup
 
       # actions/upload-artifact v7.0.2
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
@@ -126,6 +133,7 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+      # Again, in case an earlier step failed before the one above.
       - name: Clean up the signing keychain
         if: always()
         run: ./Scripts/fork-import-identity.sh --cleanup
@@ -170,8 +178,43 @@ jobs:
           fi
           (cd "$RUNNER_TEMP/dl" && sha256sum -c "Tinycast-Fork-$VERSION.zip.sha256")
 
-      - name: Create the release
+      # The tap is prepared before the release is made, so a bad deploy key fails the run while
+      # nothing is public yet.
+      - name: Prepare the tap
+        env:
+          TAP_DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }}
+          OWNER: ${{ github.repository_owner }}
         run: |
+          KEY="$RUNNER_TEMP/tap_key"
+          (umask 077 && printf '%s\n' "$TAP_DEPLOY_KEY" > "$KEY")
+          # GitHub's own host keys, from its API, so the first connection is not taken on trust.
+          gh api meta --jq '.ssh_keys[] | "github.com " + .' > "$RUNNER_TEMP/known_hosts"
+          export GIT_SSH_COMMAND="ssh -i $KEY -o IdentitiesOnly=yes -o UserKnownHostsFile=$RUNNER_TEMP/known_hosts -o StrictHostKeyChecking=yes"
+          git clone "git@github.com:$OWNER/homebrew-fork.git" "$RUNNER_TEMP/tap"
+          # A push with nothing to push proves the key can write, before anything is public.
+          git -C "$RUNNER_TEMP/tap" push --dry-run origin HEAD
+          SUM="$(cut -d' ' -f1 "$RUNNER_TEMP/dl/Tinycast-Fork-$VERSION.zip.sha256")"
+          FORK_REPO="$GITHUB_REPOSITORY" ./Scripts/fork-cask.sh "$VERSION" "$SUM" "$RUNNER_TEMP/tap/Casks/tinycast-fork.rb"
+          cd "$RUNNER_TEMP/tap"
+          git add Casks/tinycast-fork.rb
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -m "Update tinycast-fork to $VERSION"
+
+      # Safe to re-run: a release that already carries the same checksum is kept.
+      - name: Create the release
+        env:
+          EXPECTED_SHA256: ${{ needs.build.outputs.sha256 }}
+        run: |
+          if gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            PUBLISHED="$(gh release download "v$VERSION" --repo "$GITHUB_REPOSITORY" \
+              --pattern "Tinycast-Fork-$VERSION.zip.sha256" --output - | cut -d' ' -f1)"
+            if [ "$PUBLISHED" != "$EXPECTED_SHA256" ]; then
+              echo "::error::The release v$VERSION exists with a different checksum ($PUBLISHED). Use the next fork number."
+              exit 1
+            fi
+            echo "The release v$VERSION already exists with the same checksum; keeping it."
+            exit 0
+          fi
           UPSTREAM_SHA="$(git merge-base origin/main HEAD)"
           ./Scripts/fork-release-notes.sh "$VERSION" "$UPSTREAM_SHA" "$GITHUB_REPOSITORY" > "$RUNNER_TEMP/notes.md"
           gh release create "v$VERSION" \
@@ -183,32 +226,22 @@ jobs:
             --notes-file "$RUNNER_TEMP/notes.md" \
             --latest
 
-      - name: Update the tap
-        env:
-          TAP_DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }}
-          OWNER: ${{ github.repository_owner }}
+      - name: Push the tap
         run: |
-          KEY="$RUNNER_TEMP/tap_key"
-          (umask 077 && printf '%s\n' "$TAP_DEPLOY_KEY" > "$KEY")
-          # GitHub's own host keys, from its API, so the first connection is not taken on trust.
-          gh api meta --jq '.ssh_keys[] | "github.com " + .' > "$RUNNER_TEMP/known_hosts"
-          export GIT_SSH_COMMAND="ssh -i $KEY -o IdentitiesOnly=yes -o UserKnownHostsFile=$RUNNER_TEMP/known_hosts -o StrictHostKeyChecking=yes"
-          git clone "git@github.com:$OWNER/homebrew-fork.git" "$RUNNER_TEMP/tap"
-          SUM="$(cut -d' ' -f1 "$RUNNER_TEMP/dl/Tinycast-Fork-$VERSION.zip.sha256")"
-          FORK_REPO="$GITHUB_REPOSITORY" ./Scripts/fork-cask.sh "$VERSION" "$SUM" "$RUNNER_TEMP/tap/Casks/tinycast-fork.rb"
+          export GIT_SSH_COMMAND="ssh -i $RUNNER_TEMP/tap_key -o IdentitiesOnly=yes -o UserKnownHostsFile=$RUNNER_TEMP/known_hosts -o StrictHostKeyChecking=yes"
           cd "$RUNNER_TEMP/tap"
-          git add Casks/tinycast-fork.rb
-          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-            commit -m "Update tinycast-fork to $VERSION"
           # A rebase and retry, never a force push.
           for attempt in 1 2 3; do
             if git push origin HEAD; then
               exit 0
             fi
             echo "Push $attempt failed; rebasing and retrying."
-            git pull --rebase origin "$(git branch --show-current)"
+            if ! git pull --rebase origin "$(git branch --show-current)"; then
+              git rebase --abort || true
+              break
+            fi
           done
-          echo "::error::Could not push the cask. Fix it with: Scripts/fork-cask.sh --from-release $VERSION"
+          echo "::error::The release is published but the tap was not updated. Fix it with: Scripts/fork-cask.sh --from-release $VERSION, then push the cask by hand."
           exit 1
 
       - name: Remove the deploy key

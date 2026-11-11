@@ -118,7 +118,7 @@ test_import_cleanup_is_safe() {
 }
 
 test_package_ok() {
-    local app out_dir sum listed entry
+    local app out_dir sum listed entry notice
     app="$(make_fake_app "$WORK/ok")"
     out_dir="$WORK/ok/out"
     sum="$("$ROOT/Scripts/fork-package.sh" "$app" 1.2.3-fork.1 "$out_dir")" || {
@@ -135,9 +135,15 @@ test_package_ok() {
     assert_contains "$listed" "Tinycast Fork.app/Contents/Info.plist"
     assert_contains "$listed" "LICENSE"
     assert_contains "$listed" "NOTICE.md"
+    assert_contains "$listed" "FORK-NOTICE.md"
+    notice="$(unzip -p "$out_dir/Tinycast-Fork-1.2.3-fork.1.zip" FORK-NOTICE.md)"
+    assert_contains "$notice" "unofficial, modified version of Tinycast"
+    assert_contains "$notice" "1.2.3-fork.1"
+    assert_contains "$notice" "https://github.com/amryadam/tinycast/tree/v1.2.3-fork.1"
+    assert_contains "$notice" "$(date -u +%Y-%m-%d)"
     while IFS= read -r entry; do
         case "$entry" in
-            "Tinycast Fork.app/"* | "Tinycast Fork.app" | LICENSE | NOTICE.md | __MACOSX/*) ;;
+            "Tinycast Fork.app/"* | "Tinycast Fork.app" | LICENSE | NOTICE.md | FORK-NOTICE.md | __MACOSX/*) ;;
             *) fail "unexpected zip entry: $entry" ;;
         esac
     done <<< "$listed"
@@ -167,6 +173,20 @@ test_package_rejects() {
     reject wrong-name "$WORK/a6/Other.app" 1.2.3-fork.1
 }
 
+# A codesign that reports a chosen signer for -dvv and is the real one for everything else, so the
+# authority check can be tested without putting a certificate in any keychain.
+codesign_stub() { # codesign_stub DIR AUTHORITY
+    mkdir -p "$1"
+    cat > "$1/codesign" <<STUB
+#!/bin/bash
+case "\$*" in
+    *-dvv*) echo "Authority=$2"; echo "Authority=Some Root" ;;
+    *) exec /usr/bin/codesign "\$@" ;;
+esac
+STUB
+    chmod +x "$1/codesign"
+}
+
 test_package_authority() {
     local app
     [ -x "$ROOT/Scripts/fork-package.sh" ] || {
@@ -174,11 +194,36 @@ test_package_authority() {
         return
     }
     app="$(make_fake_app "$WORK/auth")"
+    # Ad-hoc signed: no authority at all.
     "$ROOT/Scripts/fork-package.sh" "$app" 1.2.3-fork.1 "$WORK/auth/out" \
         --require-authority "Tinycast Self-Signed" > /dev/null 2>&1 \
         && fail "accepted an ad-hoc signature when Tinycast Self-Signed was required"
     ls "$WORK/auth/out"/*.zip > /dev/null 2>&1 && fail "left a zip behind"
+    # Signed by somebody else.
+    codesign_stub "$WORK/auth/other" "Somebody Else"
+    PATH="$WORK/auth/other:$PATH" "$ROOT/Scripts/fork-package.sh" "$app" 1.2.3-fork.1 "$WORK/auth/out2" \
+        --require-authority "Tinycast Self-Signed" > /dev/null 2>&1 \
+        && fail "accepted a different signer"
+    # Signed by the right one.
+    codesign_stub "$WORK/auth/right" "Tinycast Self-Signed"
+    PATH="$WORK/auth/right:$PATH" "$ROOT/Scripts/fork-package.sh" "$app" 1.2.3-fork.1 "$WORK/auth/out3" \
+        --require-authority "Tinycast Self-Signed" > /dev/null 2>&1 \
+        || fail "refused the right signer"
+    [ -f "$WORK/auth/out3/Tinycast-Fork-1.2.3-fork.1.zip" ] || fail "no zip for the right signer"
     return 0
+}
+
+test_package_relative_paths() {
+    local app
+    [ -x "$ROOT/Scripts/fork-package.sh" ] || {
+        fail "Scripts/fork-package.sh is missing or not executable"
+        return
+    }
+    app="$(make_fake_app "$WORK/rel")"
+    (cd "$WORK/rel" && "$ROOT/Scripts/fork-package.sh" "Tinycast Fork.app" 1.2.3-fork.1 out > /dev/null) \
+        || fail "relative paths failed"
+    [ -f "$WORK/rel/out/Tinycast-Fork-1.2.3-fork.1.zip" ] || fail "the zip is not where the caller said"
+    : "$app"
 }
 
 test_notes_licence_items() {
@@ -202,7 +247,7 @@ test_notes_licence_items() {
         assert_contains "$out" "$needle"
     done
     while IFS= read -r title; do
-        assert_contains "$out" "$title"
+        assert_contains "$out" "- [$title]("
     done < <(sed -n 's/^# Feature: *//p' "$ROOT"/docs/fork/*.md)
 }
 
@@ -322,6 +367,10 @@ case "$1 $2" in
     "secret list") for n in ${STUB_EXISTING_SECRETS:-}; do echo "$n"; done ;;
     "repo view") [ "${STUB_REPO_EXISTS:-0}" = 1 ] || exit 1 ;;
     "repo deploy-key")
+        if [ "$3" = list ]; then
+            for n in ${STUB_DEPLOY_KEY_IDS:-}; do echo "$n"; done
+            exit 0
+        fi
         for a in "$@"; do [ -f "$a" ] && cp "$a" "$STUB_DIR/deploy-pub"; done
         ;;
     "api "*)
@@ -412,7 +461,7 @@ test_bootstrap_identity_calls() {
 
 test_bootstrap_tap_calls() {
     require_bootstrap || return 0
-    local out
+    local out id
     bootstrap_env tap
     out="$(run_bootstrap tap)" || {
         fail "tap failed: $out"
@@ -425,6 +474,18 @@ test_bootstrap_tap_calls() {
     assert_contains "$(cat "$BS/stdin-TAP_DEPLOY_KEY")" "BEGIN OPENSSH PRIVATE KEY"
     assert_lacks "$(cat "$BS/calls.log")" "PRIVATE KEY"
     assert_lacks "$out" "PRIVATE KEY"
+    # Replacing a key: the new key and secret come first, then the old key goes.
+    bootstrap_env tap3
+    STUB_REPO_EXISTS=1 STUB_DEPLOY_KEY_IDS="111 222" run_bootstrap tap > /dev/null || fail "tap failed with old keys"
+    local add_line secret_line del_line
+    add_line="$(grep -n '^repo deploy-key add' "$BS/calls.log" | head -1 | cut -d: -f1)"
+    secret_line="$(grep -n '^secret set TAP_DEPLOY_KEY' "$BS/calls.log" | head -1 | cut -d: -f1)"
+    for id in 111 222; do
+        del_line="$(grep -n "^repo deploy-key delete $id" "$BS/calls.log" | head -1 | cut -d: -f1)"
+        [ -n "$del_line" ] || fail "the old key $id was not deleted"
+        [ -n "$del_line" ] && [ "$del_line" -gt "${secret_line:-0}" ] && [ "$del_line" -gt "${add_line:-0}" ] \
+            || fail "the old key $id was deleted before the new key and secret were stored"
+    done
     # An existing tap repository is kept, not created again.
     bootstrap_env tap2
     STUB_REPO_EXISTS=1 run_bootstrap tap > /dev/null || fail "tap failed when the repository exists"
@@ -551,10 +612,29 @@ test_workflow_static() {
         || fail "every checkout must set persist-credentials: false"
     [ "$(grep -c 'if: always()' "$wf")" -ge 2 ] || fail "each job needs an if: always() cleanup step"
     grep -q 'concurrency:' "$wf" || fail "no concurrency group"
+
+    # Order matters. In the build job Homebrew's lint runs before the key is imported, and the
+    # keychain is removed before the artifact is uploaded. In the publish job the tap is prepared
+    # before the release is made, and a release that already exists is kept rather than failing.
+    step_line() { grep -n -- "- name: $2" <<< "$1" | head -1 | cut -d: -f1; }
+    local lint import cleanup upload prepare release push
+    lint="$(step_line "$build" 'Lint the cask')"
+    import="$(step_line "$build" 'Import the signing identity')"
+    cleanup="$(step_line "$build" 'Remove the signing keychain')"
+    upload="$(grep -n 'actions/upload-artifact@' <<< "$build" | head -1 | cut -d: -f1)"
+    [ -n "$lint" ] && [ -n "$import" ] && [ "$lint" -lt "$import" ] || fail "the cask lint must run before the key is imported"
+    [ -n "$cleanup" ] && [ -n "$upload" ] && [ "$cleanup" -lt "$upload" ] || fail "the keychain must be removed before the upload"
+    prepare="$(step_line "$publish" 'Prepare the tap')"
+    release="$(step_line "$publish" 'Create the release')"
+    push="$(step_line "$publish" 'Push the tap')"
+    [ -n "$prepare" ] && [ -n "$release" ] && [ -n "$push" ] && [ "$prepare" -lt "$release" ] && [ "$release" -lt "$push" ] \
+        || fail "the publish steps must be: prepare the tap, create the release, push the tap"
+    assert_contains "$publish" "gh release view"
+    assert_contains "$publish" "git rebase --abort"
 }
 
 ALL=(validate_accepts validate_rejects build_print_settings import_requires_env import_cleanup_is_safe
-    package_ok package_rejects package_authority notes_licence_items notes_rejects cask_contents cask_rejects cask_from_release cask_style
+    package_ok package_rejects package_authority package_relative_paths notes_licence_items notes_rejects cask_contents cask_rejects cask_from_release cask_style
     bootstrap_dry_run bootstrap_environments_calls bootstrap_identity_calls bootstrap_tap_calls
     bootstrap_refuses_overwrite bootstrap_no_leftovers bootstrap_rejects_bad_args
     workflow_static)

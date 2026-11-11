@@ -11,7 +11,7 @@ The fork's rules are in [README.md](README.md).
 
 ## Status
 
-Spec and plan written, and Tasks 1 to 6 (every script and the workflow, with their tests) are done, and are awaiting review.
+Spec and plan written, and Tasks 1 to 6 (every script and the workflow, with their tests) are done, and an Opus review of them is triaged and fixed.
 The workflow has never run: it is checked statically and its scripts are tested, but the runner, the identity and the tap are unproven until the dry run.
 `Scripts/fork-build.sh` is listed in [fork-identity.md](fork-identity.md); this feature adds `FORK_VERSION`, `FORK_BUILD_NUMBER` and `--print-settings` to it.
 Run the tests with `./Scripts/fork-test.sh`.

@@ -124,23 +124,25 @@ do_environments() {
 }
 
 do_tap() {
-    local id
+    local id old_ids=""
     refuse_existing fork-publish TAP_DEPLOY_KEY
     make_work
     ssh-keygen -q -t ed25519 -N "" -C "$DEPLOY_KEY_TITLE" -f "$WORK/deploy_key"
 
     if gh repo view "$TAP" > /dev/null 2>&1; then
         echo "✓ $TAP already exists"
-        # A key of ours that is replaced must stop working, so remove the old one.
-        for id in $(gh repo deploy-key list --repo "$TAP" --json id,title \
-            --jq ".[] | select(.title==\"$DEPLOY_KEY_TITLE\") | .id" 2> /dev/null || true); do
-            gh_write repo deploy-key delete "$id" --repo "$TAP"
-        done
+        # Old keys of ours are removed only after the new key and its secret are in place, so a
+        # failure part way never leaves publishing without a working key.
+        old_ids="$(gh repo deploy-key list --repo "$TAP" --json id,title \
+            --jq ".[] | select(.title==\"$DEPLOY_KEY_TITLE\") | .id" 2> /dev/null || true)"
     else
         gh_write repo create "$TAP" --public --add-readme --description "Homebrew tap for the Tinycast Fork"
     fi
     gh_write repo deploy-key add "$WORK/deploy_key.pub" --repo "$TAP" --title "$DEPLOY_KEY_TITLE" --allow-write
     gh_write secret set TAP_DEPLOY_KEY --env fork-publish --repo "$REPO" < "$WORK/deploy_key"
+    for id in $old_ids; do
+        gh_write repo deploy-key delete "$id" --repo "$TAP"
+    done
     echo "✓ $TAP has a write deploy key, and its private half is the secret TAP_DEPLOY_KEY in fork-publish."
 }
 

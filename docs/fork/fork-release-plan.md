@@ -112,7 +112,7 @@ git commit -m "Validate release versions and let the build take a version"
 
 **Interfaces:**
 - Produces: `./Scripts/fork-import-identity.sh`, which reads `P12_BASE64`, `P12_PASSWORD` and `RUNNER_TEMP`, imports the identity into a new keychain under `RUNNER_TEMP`, unlocks it, sets its timeout, opens the key to `codesign` through a partition list, puts it on the user search list, and prints nothing secret. `--cleanup` removes that keychain from the list and from disk.
-- Produces: `./Scripts/fork-package.sh APP_PATH VERSION OUT_DIR [--require-authority NAME]`. It verifies the bundle, builds a staging folder with the app, `LICENSE` and `NOTICE.md` at its root, writes `OUT_DIR/Tinycast-Fork-VERSION.zip` and `.zip.sha256`, and prints the SHA-256.
+- Produces: `./Scripts/fork-package.sh APP_PATH VERSION OUT_DIR [--require-authority NAME]`. It verifies the bundle, builds a staging folder with the app, `LICENSE`, `NOTICE.md` and a generated `FORK-NOTICE.md` at its root, writes `OUT_DIR/Tinycast-Fork-VERSION.zip` and `.zip.sha256`, and prints the SHA-256.
 
 - [ ] **Step 1: Write the failing tests.**
   - `test_import_requires_env` asserts a non-zero exit and a message naming the missing variable, and that the output contains none of `BEGIN`, `PRIVATE` or the password.

@@ -111,12 +111,13 @@ It holds the signing key and can read the repository, but cannot write to it.
 | Tag check | `gh api` fails the run when `v<version>` already exists. |
 | Select Xcode | The newest real `Xcode_27.x` folder, as upstream's workflow does. |
 | Gate | `FORK_BASE=origin/main ./Scripts/fork-check.sh` and `./Scripts/run-tests.sh file-search-path-test`. |
+| Lint the cask | Before the key is imported, so Homebrew's gems never run beside it: a throwaway local tap, `brew style` and `brew audit --cask --strict`, with a placeholder checksum. |
 | Import identity | `Scripts/fork-import-identity.sh`: a temporary keychain, unlocked, with the `.p12` imported, the key opened to `codesign` through a partition list, and the keychain on the search list. |
 | Build | `./Scripts/fork-build.sh Release`, with the version and the run number. |
 | Package | `Scripts/fork-package.sh`, which verifies the bundle and writes the zip and its SHA-256. |
-| Lint the cask | Generate the cask for this version and run `brew style` and `brew audit --cask --strict` on the runner. |
+| Remove the keychain | Straight after packaging, so the key is gone before the upload runs. |
 | Upload | The zip and its checksum as an artifact kept for one day. |
-| Clean up | `if: always()`: delete the temporary keychain from the list and from disk, and the `.p12`. |
+| Clean up | `if: always()`: the same removal again, in case an earlier step failed first. |
 
 ### The publish job
 
@@ -126,8 +127,9 @@ It can write releases, and never sees the signing key.
 |---|---|
 | Checkout and download | The repository for its scripts, and the build job's artifact. |
 | Verify | The zip's SHA-256 equals the build job's. |
-| Release | `gh release create "v$VERSION" --target "$GITHUB_SHA" --latest`, with the zip, its checksum, and generated notes. |
-| Tap | Clone the tap with the deploy key, write the cask, commit as `github-actions[bot]`, and push, retrying a rebase up to three times and never forcing. |
+| Prepare the tap | Clone the tap with the deploy key, prove it can write with `git push --dry-run`, write the cask and commit it as `github-actions[bot]`. This comes first, so a bad key fails the run while nothing is public. |
+| Release | `gh release create "v$VERSION" --target "$GITHUB_SHA" --latest`, with the zip, its checksum, and generated notes. A release that already exists with the same checksum is kept, so "Re-run failed jobs" works after a tap failure. |
+| Push the tap | Push, retrying a rebase up to three times, aborting a failed rebase, never forcing. On failure it prints the `--from-release` recovery command. |
 | Clean up | `if: always()`: delete the key file. |
 
 Actions are pinned to a full commit SHA, and secrets are read only from `env:`.
@@ -163,8 +165,8 @@ The fork stays public, so the source at the tag is available from the same place
 | Signature | `codesign --verify --deep --strict` passes |
 | Signer | With `--require-authority`, the authority is `Tinycast Self-Signed`, and a different signer is refused |
 
-The zip is built from a staging folder that holds `Tinycast Fork.app`, `LICENSE` and `NOTICE.md` at its root, with `ditto -c -k --sequesterRsrc`.
-The licence text therefore travels with the binary, and the cask still installs only the app.
+The zip is built from a staging folder that holds `Tinycast Fork.app`, `LICENSE`, `NOTICE.md` and a generated `FORK-NOTICE.md` at its root, with `ditto -c -k --sequesterRsrc`.
+The licence text, the notice of modification (with the date and upstream commit) and the source link therefore travel with the binary, as AGPL sections 5(a) and 6(d) ask, and the cask still installs only the app.
 It is named `Tinycast-Fork-<version>.zip`.
 
 ## The cask and the tap
@@ -260,6 +262,9 @@ end
 | A user installs a build that macOS has not notarised. | The notes say so, and the cask leaves the approval to the user. |
 | The About screen says "© Abue Ammar, AGPL-3.0" and links to upstream's GitHub, email and Discord, with no modification notice, and fork users would report bugs to a maintainer who declined the feature. | A small follow-up change with a `FORK(fork-release)` hook. Section 5(a) of the AGPL wants the notice in the work itself, so this should be done before the release is shared widely. |
 | Making `dev` the default branch changes what "Sync fork" does. | The rule above, and the README says it. |
+| `identity` uploads two secrets one after the other, and the second upload can fail, leaving a password that does not match the file. | GitHub has no atomic write for two secrets. Re-run with `--force`; the release fails at the import step, not silently. |
+| With `cancel-in-progress: false`, GitHub keeps one pending run, so a third dispatch cancels the second while the first runs. | Dispatch one release at a time. |
+| The `.p12` password is passed to `security import -P` on a command line, and the keychain password with `-p`. | The runner is a single-tenant VM that is destroyed afterwards, the keychain password is random, and upstream's release does the same. |
 
 ## Decisions
 
