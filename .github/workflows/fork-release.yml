@@ -17,6 +17,11 @@ on:
         description: Publish the release and update the tap. Off builds and uploads an artifact only.
         type: boolean
         default: false
+      expected_sha:
+        description: Optional. The commit this run must build. The run fails if dev has moved.
+        type: string
+        required: false
+        default: ""
 
 permissions: {}
 
@@ -46,6 +51,15 @@ jobs:
 
       - name: Validate the version
         run: ./Scripts/fork-release-validate.sh "$VERSION"
+
+      - name: Check the commit
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          if [ -n "$EXPECTED_SHA" ] && [ "$EXPECTED_SHA" != "$GITHUB_SHA" ]; then
+            echo "::error::This run builds $GITHUB_SHA, but $EXPECTED_SHA was expected. dev has moved."
+            exit 1
+          fi
 
       - name: Check that the tag is free
         env:
@@ -110,9 +124,9 @@ jobs:
         env:
           RUN_NUMBER: ${{ github.run_number }}
         run: |
-          BASE="$(./Scripts/fork-release-validate.sh "$VERSION")"
           export FORK_BUILD_DIR="$RUNNER_TEMP/DerivedData"
-          FORK_VERSION="$BASE" FORK_BUILD_NUMBER="$RUN_NUMBER" ./Scripts/fork-build.sh Release
+          # The app carries the full fork version, which is what the in-app updater compares.
+          FORK_VERSION="$VERSION" FORK_BUILD_NUMBER="$RUN_NUMBER" ./Scripts/fork-build.sh Release
 
       - name: Package
         id: package
@@ -132,6 +146,22 @@ jobs:
           path: ${{ runner.temp }}/out/*
           retention-days: 1
           if-no-files-found: error
+
+      # A new release must satisfy the previous release's signing requirement, or every installed
+      # copy would refuse to update to it. Skipped when there is no previous release.
+      - name: Check the update path
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PREVIOUS_TAG="$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName // empty')"
+          if [ -z "$PREVIOUS_TAG" ]; then
+            echo "There is no previous release, so there is nothing to stay compatible with."
+            exit 0
+          fi
+          mkdir -p "$RUNNER_TEMP/previous"
+          gh release download "$PREVIOUS_TAG" --repo "$GITHUB_REPOSITORY" --pattern 'Tinycast-Fork-*.zip' --dir "$RUNNER_TEMP/previous"
+          APP="$RUNNER_TEMP/DerivedData/Build/Products/Release/Tinycast Fork.app"
+          ./Scripts/fork-check-update-path.sh "$APP" "$RUNNER_TEMP"/previous/Tinycast-Fork-*.zip
 
       # Again, in case an earlier step failed before the one above.
       - name: Clean up the signing keychain

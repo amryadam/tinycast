@@ -66,7 +66,7 @@ test_build_print_settings() {
 
 # make_fake_app DIR [BUNDLE_ID] [VERSION] [sign|nosign]: a minimal signed bundle named Tinycast Fork.app.
 make_fake_app() {
-    local dir="$1" id="${2:-com.amryadam.tinycast}" version="${3:-1.2.3}" sign="${4:-sign}"
+    local dir="$1" id="${2:-com.amryadam.tinycast}" version="${3:-1.2.3-fork.1}" sign="${4:-sign}"
     local app="$dir/Tinycast Fork.app"
     mkdir -p "$app/Contents/MacOS"
     cp /usr/bin/true "$app/Contents/MacOS/Tinycast"
@@ -164,10 +164,12 @@ test_package_rejects() {
     }
     reject wrong-id "$(make_fake_app "$WORK/a1" com.example.other)" 1.2.3-fork.1
     reject wrong-version "$(make_fake_app "$WORK/a2" com.amryadam.tinycast 9.9.9)" 1.2.3-fork.1
-    reject unsigned "$(make_fake_app "$WORK/a3" com.amryadam.tinycast 1.2.3 nosign)" 1.2.3-fork.1
+    reject unsigned "$(make_fake_app "$WORK/a3" com.amryadam.tinycast 1.2.3-fork.1 nosign)" 1.2.3-fork.1
     reject missing "$WORK/a4/Tinycast Fork.app" 1.2.3-fork.1
     app="$(make_fake_app "$WORK/a5")"
     reject bad-version "$app" "1.2.3"
+    # The app must carry the full fork version, so the updater can tell revisions apart.
+    reject base-version-only "$(make_fake_app "$WORK/a7" com.amryadam.tinycast 1.2.3)" 1.2.3-fork.1
     mkdir -p "$WORK/a6"
     cp -R "$app" "$WORK/a6/Other.app"
     reject wrong-name "$WORK/a6/Other.app" 1.2.3-fork.1
@@ -282,7 +284,7 @@ test_cask_contents() {
     for needle in 'cask "tinycast-fork" do' 'version "0.12.11-fork.1"' "sha256 \"$SHA64\"" \
         'url "https://github.com/amryadam/tinycast/releases/download/v#{version}/Tinycast-Fork-#{version}.zip"' \
         'name "Tinycast Fork"' 'desc "Unofficial fork' 'homepage "https://github.com/amryadam/tinycast"' \
-        'livecheck do' 'strategy :github_latest' '-fork' 'depends_on macos: :tahoe' \
+        'livecheck do' 'strategy :github_latest' '-fork' 'depends_on macos: :tahoe' 'auto_updates true' \
         'depends_on arch: :arm64' 'app "Tinycast Fork.app"' 'uninstall quit: "com.amryadam.tinycast"' \
         'com.amryadam.tinycast.dictation' 'CrashReporter/Tinycast Fork_*.plist'; do
         assert_contains "$out" "$needle"
@@ -577,12 +579,18 @@ test_workflow_static() {
     assert_contains "$build" "contents: read"
     assert_contains "$build" "if: github.ref == 'refs/heads/dev'"
     assert_lacks "$build" ": write"
-    assert_lacks "$build" "gh release"
+    # The build job may read the previous release, but never create one.
+    assert_lacks "$build" "gh release create"
     assert_lacks "$build" "git push"
     assert_lacks "$build" "TAP_DEPLOY_KEY"
     assert_contains "$build" "SIGNING_P12_BASE64"
     assert_contains "$build" "SIGNING_P12_PASSWORD"
     assert_contains "$build" "--require-authority"
+    assert_contains "$build" "fork-check-update-path.sh"
+    assert_contains "$build" "EXPECTED_SHA"
+    # shellcheck disable=SC2016 # literal shell text is wanted
+    assert_contains "$build" 'FORK_VERSION="$VERSION"'
+    grep -q 'expected_sha:' "$wf" || fail "the workflow has no expected_sha input"
     assert_contains "$build" "retention-days: 1"
 
     assert_contains "$publish" "environment: fork-publish"
@@ -633,11 +641,53 @@ test_workflow_static() {
     assert_contains "$publish" "git rebase --abort"
 }
 
+# A codesign that answers -d -r- with a fixed requirement, and --verify by STUB_VERIFY (0 or 1).
+requirement_stub() { # requirement_stub DIR
+    mkdir -p "$1"
+    cat > "$1/codesign" <<'STUB'
+#!/bin/bash
+case "$*" in
+    *"-d -r-"*) echo 'designated => identifier "com.amryadam.tinycast" and certificate leaf = H"00aa"' ;;
+    *--verify*) echo "$*" > "$STUB_LOG"; exit "${STUB_VERIFY:-0}" ;;
+    *) exec /usr/bin/codesign "$@" ;;
+esac
+STUB
+    chmod +x "$1/codesign"
+}
+
+test_update_path() {
+    local script="$ROOT/Scripts/fork-check-update-path.sh" prev new stub="$WORK/up/stub"
+    [ -x "$script" ] || {
+        fail "Scripts/fork-check-update-path.sh is missing or not executable"
+        return
+    }
+    prev="$(make_fake_app "$WORK/up/prev")"
+    mkdir -p "$WORK/up/zip"
+    ditto -c -k --keepParent "$prev" "$WORK/up/zip/prev.zip"
+    new="$(make_fake_app "$WORK/up/new" com.amryadam.tinycast 1.2.3-fork.2)"
+    requirement_stub "$stub"
+    # The new app satisfies the previous requirement.
+    STUB_LOG="$WORK/up/log" STUB_VERIFY=0 PATH="$stub:$PATH" "$script" "$new" "$WORK/up/zip/prev.zip" > /dev/null 2>&1 \
+        || fail "refused an app that satisfies the previous requirement"
+    assert_contains "$(cat "$WORK/up/log")" 'certificate leaf = H"00aa"'
+    # It does not.
+    STUB_LOG="$WORK/up/log" STUB_VERIFY=1 PATH="$stub:$PATH" "$script" "$new" "$WORK/up/zip/prev.zip" > /dev/null 2>&1 \
+        && fail "accepted an app that fails the previous requirement"
+    # No previous zip, or one with no app in it.
+    PATH="$stub:$PATH" "$script" "$new" "$WORK/up/zip/missing.zip" > /dev/null 2>&1 \
+        && fail "accepted a missing previous zip"
+    mkdir -p "$WORK/up/empty" && echo x > "$WORK/up/empty/x" && ditto -c -k "$WORK/up/empty" "$WORK/up/zip/empty.zip"
+    PATH="$stub:$PATH" "$script" "$new" "$WORK/up/zip/empty.zip" > /dev/null 2>&1 \
+        && fail "accepted a previous zip with no app"
+    "$script" > /dev/null 2>&1 && fail "accepted no arguments"
+    return 0
+}
+
 ALL=(validate_accepts validate_rejects build_print_settings import_requires_env import_cleanup_is_safe
     package_ok package_rejects package_authority package_relative_paths notes_licence_items notes_rejects cask_contents cask_rejects cask_from_release cask_style
     bootstrap_dry_run bootstrap_environments_calls bootstrap_identity_calls bootstrap_tap_calls
     bootstrap_refuses_overwrite bootstrap_no_leftovers bootstrap_rejects_bad_args
-    workflow_static)
+    workflow_static update_path)
 
 if [ $# -gt 0 ]; then
     names=("$@")

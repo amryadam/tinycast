@@ -21,6 +21,15 @@ The fork's bundle id, `com.amryadam.tinycast`, is now the `fork` channel instead
 | Trust | A release has no `.sig`, so the downloaded bundle must satisfy the running copy's own designated requirement. All releases are signed by the same GitHub-held identity, so they do. |
 | Install | The updater downloads the zip, verifies it, stages it, and swaps it in at quit, exactly as for upstream's channels. |
 
+## Release pipeline changes
+
+| Change | Why |
+|---|---|
+| The app's version string is the full `0.12.11-fork.N`. | The running app must know its fork number to compare. `fork-package.sh` checks it. |
+| The cask declares `auto_updates true`. | Otherwise `brew upgrade` would fight the in-app update. |
+| `Fork release` checks the new app against the previous release's designated requirement. | A changed signing identity would lock every installed copy out of updates. |
+| `Fork release` takes an optional `expected_sha`. | A sync can require the release to build exactly the commit it verified. |
+
 ## Known limits
 
 - A copy built on this Mac with a different local key refuses a GitHub update, because its signature differs. Install the GitHub build.
@@ -39,3 +48,4 @@ The fork's bundle id, `com.amryadam.tinycast`, is now the `fork` channel instead
 | `Tinycast/Features/Updates/Service/UpdateCheckStore.swift` | Edit | Builds its default request from the channel. | Low |
 | `Tests/fork-update-test.swift` | New | Tests for versions, channels, the URL and the feed. | None |
 | `Scripts/run-tests.sh` | Edit | Runs the new test. | Low |
+| `Scripts/fork-check-update-path.sh` | New | Refuses a release that installed copies would refuse to update to. | None |
