@@ -1,7 +1,7 @@
 # Feature: fork-identity
 
-The fork builds as its own app, with its own bundle id, link scheme, name and signing identity.
-This keeps it side by side with the installed Tinycast, stops upstream releases from replacing it, and lets macOS remember its permissions across rebuilds.
+The fork builds as its own app, with its own bundle id, link scheme and signing identity, and the user-facing name Tinycast.
+This stops upstream releases from replacing it, keeps its data apart from the installed Tinycast, and lets macOS remember its permissions across rebuilds.
 It changes no upstream file.
 
 ## Contents
@@ -19,7 +19,7 @@ It changes no upstream file.
 |---|---|---|
 | Bundle id | `com.amryadam.tinycast` | Your own reverse-DNS name. Upstream's `ReleaseChannel` treats any id it does not know as a development build that never updates itself. |
 | Link scheme | `tinycast-amryadam` | So a link never lands in whichever Tinycast macOS picks. |
-| App name | `Tinycast Amr` | Installs beside `Tinycast.app` without replacing it. |
+| App name | `Tinycast` | The user-facing name stays Tinycast. The file is `Tinycast.app`, so it cannot sit in the same folder as the installed one. |
 | Signing identity | `Tinycast Self-Signed` | The name `project.yml` and `docs/signing.md` already expect, so Xcode builds work too. |
 
 The overrides are passed on the `xcodebuild` command line, the way upstream's release workflow does it for its Beta app.
@@ -42,12 +42,13 @@ Settings, clipboard history, snippets and the config folder are keyed by bundle 
 ```
 
 Overrides: `FORK_BUNDLE_ID`, `FORK_URL_SCHEME`, `FORK_APP_NAME`, `FORK_BUILD_DIR`.
-The app lands in `~/Library/Caches/tinycast-fork/DerivedData/Build/Products/Release/Tinycast Amr.app`.
+The app lands in `~/Library/Caches/tinycast-fork/DerivedData/Build/Products/Release/Tinycast.app`.
 
 ## What changes for you
 
 - The fork starts with empty settings, clipboard history, snippets and quicklinks, because they are stored per bundle id. The Backup feature can import settings from the installed app.
-- Accessibility, Full Disk Access and the other permissions must be granted to `Tinycast Amr` once. The stable identity keeps them across rebuilds.
+- Accessibility, Full Disk Access and the other permissions must be granted to this app once, under its own entry. The stable identity keeps them across rebuilds.
+- Both apps are called Tinycast, so Spotlight, the Dock and ⌘-Tab show the same name for each. Keep only one in `/Applications`, and tell them apart by their bundle ids.
 - Two Tinycast copies share the machine's global hotkeys, so quit the installed one or give the fork different shortcuts.
 - Raycast-extension deep links accept only upstream's schemes, so a link that uses `tinycast-amryadam` is untested.
 
@@ -56,7 +57,7 @@ The app lands in `~/Library/Caches/tinycast-fork/DerivedData/Build/Products/Rele
 | Item | Note |
 |---|---|
 | Running the signing script | It changes the user's keychain, so the user runs it. |
-| A signed Release build | Not run, because it needs the identity. An unsigned Debug build with the same overrides produced bundle id `com.amryadam.tinycast`, name `Tinycast Amr`, scheme `tinycast-amryadam` and dictation helper id `com.amryadam.tinycast.dictation`. |
+| A signed Release build | Not run, because it needs the identity. An unsigned Debug build with the same overrides produced `Tinycast.app` with bundle id `com.amryadam.tinycast`, scheme `tinycast-amryadam` and dictation helper id `com.amryadam.tinycast.dictation`. |
 | Installing into `/Applications` | The script prints the path and stops, so nothing is copied for you. |
 
 ## Removing it
