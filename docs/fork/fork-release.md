@@ -28,7 +28,7 @@ Run the tests with `./Scripts/fork-test.sh`.
 | Not yet checked | `brew install` from the tap, and the first launch under Gatekeeper. |
 
 The signing identity's certificate fingerprint (SHA-256) is `E6:6E:5C:6C:D4:36:FD:02:DB:4A:C0:80:A4:7B:46:9C:E9:43:97:FE:63:89:74:A9:7C:94:BF:D3:20:80:DD:26`.
-Check it with `codesign -dvvv` on an installed copy, or with `openssl`, to be sure the same identity signs every release.
+To confirm a later release is signed by the same identity, extract its certificate with `codesign -d --extract-certificates` and compare the SHA-256 of `codesign0` with this value.
 
 ## Files
 
