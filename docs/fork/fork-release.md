@@ -11,11 +11,24 @@ The fork's rules are in [README.md](README.md).
 
 ## Status
 
-Spec and plan written, and Tasks 1 to 6 (every script and the workflow, with their tests) are done, and an Opus review of them is triaged and fixed.
-The workflow has never run: it is checked statically and its scripts are tested, but the runner, the identity and the tap are unproven until the dry run.
-`Scripts/fork-build.sh` is listed in [fork-identity.md](fork-identity.md); this feature adds `FORK_VERSION`, `FORK_BUILD_NUMBER` and `--print-settings` to it.
+Done and live.
+Release [v0.12.11-fork.1](https://github.com/amryadam/tinycast/releases/tag/v0.12.11-fork.1) was built and published by the workflow, and the cask is in [amryadam/homebrew-fork](https://github.com/amryadam/homebrew-fork).
 Run the tests with `./Scripts/fork-test.sh`.
-Nothing is published, and no secret is uploaded.
+`Scripts/fork-build.sh` is listed in [fork-identity.md](fork-identity.md); this feature adds `FORK_VERSION`, `FORK_BUILD_NUMBER`, `--print-settings` and the arm64 pin to it.
+
+## Results of the first runs
+
+| Check | Result |
+|---|---|
+| Dry run (`publish` off) | Passed first time. The `xcode-27` runner started, the cask lint passed, and xcodebuild accepted the self-signed identity. |
+| Downloaded artifact and released zip | Checksum matches, `codesign --verify --deep --strict` passes, signed by `Tinycast Self-Signed`, bundle id `com.amryadam.tinycast`, version 0.12.11, arm64 only. |
+| Zip contents | The app, `LICENSE`, `NOTICE.md` and `FORK-NOTICE.md`. |
+| Cask in the tap | Names the same version and the same SHA-256 as the released asset. |
+| Release | Tag on the `dev` commit that was built, marked latest, with notes carrying the AGPL items. |
+| Not yet checked | `brew install` from the tap, and the first launch under Gatekeeper. |
+
+The signing identity's certificate fingerprint (SHA-256) is `E6:6E:5C:6C:D4:36:FD:02:DB:4A:C0:80:A4:7B:46:9C:E9:43:97:FE:63:89:74:A9:7C:94:BF:D3:20:80:DD:26`.
+To confirm a later release is signed by the same identity, extract its certificate with `codesign -d --extract-certificates` and compare the SHA-256 of `codesign0` with this value.
 
 ## Files
 
