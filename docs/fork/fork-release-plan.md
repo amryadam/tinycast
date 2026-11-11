@@ -219,7 +219,7 @@ git commit -m "Add a bootstrap script for the release environments and secrets"
 - [ ] **Step 2: Run it and see it fail.**
 - [ ] **Step 3: Resolve the action SHAs** for `actions/checkout`, `actions/upload-artifact` and `actions/download-artifact` with read-only `gh api repos/OWNER/REPO/git/ref/tags/TAG` calls, and record each tag beside its SHA in a comment.
 - [ ] **Step 4: Write the workflow** following the spec's two jobs.
-  - The build job validates the version, checks out, checks the tag with `gh api`, selects Xcode, runs the gate with `FORK_BASE=origin/main`, imports the identity, builds, packages with `--require-authority`, lints a generated cask with `brew style` and `brew audit --cask --strict`, uploads the artifact, and cleans up.
+  - The build job validates the version, checks out, checks the tag with `gh api`, selects Xcode, imports the identity, builds, packages with `--require-authority`, lints a generated cask with `brew style` and `brew audit --cask --strict`, uploads the artifact, and cleans up.
   - The publish job downloads the artifact, verifies the checksum, creates the release from generated notes, clones the tap with the deploy key, writes the cask, pushes with up to three rebase retries and never forces, and cleans up.
 - [ ] **Step 6: Add a rule to `docs/fork/README.md`** that `gh repo sync` must always use `-b main`, and that `gh workflow list --all` is re-checked after every upstream sync.
 - [ ] **Step 7: Run `test_workflow_static`, `shellcheck`, the whole `./Scripts/fork-test.sh`, and `./Scripts/fork-check.sh`.** Expected: all pass.

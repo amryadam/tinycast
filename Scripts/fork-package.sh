@@ -66,8 +66,8 @@ cp "$HERE/LICENSE" "$HERE/NOTICE.md" "$STAGE/"
 # The AGPL wants the notice of modification, and where the source is, next to the object code.
 REPO="${FORK_REPO:-amryadam/tinycast}"
 [[ "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "FORK_REPO '$REPO' is not of the form OWNER/NAME"
-UPSTREAM_COMMIT="$(git -C "$HERE" merge-base origin/main HEAD 2> /dev/null \
-    || git -C "$HERE" merge-base upstream/main HEAD 2> /dev/null || echo "not recorded")"
+UPSTREAM_COMMIT="$(git -C "$HERE" merge-base upstream/main HEAD 2> /dev/null \
+    || git -C "$HERE" merge-base origin/main HEAD 2> /dev/null || echo "not recorded")"
 cat > "$STAGE/FORK-NOTICE.md" <<NOTICE
 # Tinycast Fork $VERSION
 

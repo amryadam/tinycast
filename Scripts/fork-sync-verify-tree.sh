@@ -11,7 +11,9 @@
 #   - differ from git's own computed merge (git merge-tree) only in the paths that conflicted,
 #     so a clean merge must equal git's result outside .github/, and a resolution may change only
 #     what conflicted;
-#   - carry no conflict marker in any file it changes.
+#   - carry no conflict marker in any file it changes;
+#   - have no two paths that differ only by case;
+#   - hold no symlink or submodule where git's own merge has none.
 
 set -euo pipefail
 
@@ -35,6 +37,10 @@ set -- $(git rev-list --parents -n 1 "$cand")
 [ "$2" = "$dev" ] || die "the first parent is not dev"
 [ "$3" = "$up" ] || die "the second parent is not upstream"
 
+# On a Mac, two paths that differ only by case are one file, so one could replace a fork script
+# that the checks below compare by exact name.
+"$(dirname "$0")/fork-check-build-inputs.sh" --paths-only "$cand" > /dev/null || die "the candidate has paths that differ only by case"
+
 [ -z "$(git diff --name-only "$dev" "$cand" -- .github)" ] || die "the candidate changes .github/"
 [ -z "$(git diff --name-only "$dev" "$cand" -- 'Scripts/fork-*' docs/fork)" ] \
     || die "the candidate changes the fork's own scripts or docs"
@@ -57,6 +63,11 @@ while IFS= read -r -d '' path; do
         die "the candidate differs from git's merge in $path, which did not conflict"
     fi
 done < <(git diff --name-only -z "$baseline" "$cand")
+
+# A resolved file stays a plain file: no link out of the repository and no submodule.
+if git diff --raw --no-renames "$baseline" "$cand" | awk '{ print $2 }' | grep -qE '^(120000|160000)$'; then
+    die "the candidate has a symlink or a submodule where git's merge has none"
+fi
 
 # No conflict markers in anything the candidate changed.
 while IFS= read -r -d '' path; do

@@ -6,6 +6,8 @@
 #   resolve         the Claude token only, and no write access. It reads untrusted upstream text.
 #   verify          no secrets. It runs the merged code, which is third-party code.
 #   push            the GitHub token only, and no merged code. It re-checks the result itself.
+#                   The token needs Contents and Workflows write: upstream's changes to its own
+#                   workflow files ride along in the merge, and GitHub refuses them without it.
 #   release         the workflow token, to start the release workflow or report on it.
 # Inputs and secrets are read through env: only, so nothing is spliced into a shell script.
 name: Upstream sync
@@ -157,8 +159,31 @@ jobs:
 
       - name: Open the conflicted merge
         run: |
+          git remote add upstream https://github.com/abue-ammar/tinycast.git
+          git fetch --quiet upstream main
           git fetch --quiet "$RUNNER_TEMP/in/conflicted.bundle" refs/fork-sync/conflicted:refs/fork-sync/conflicted
           git checkout --quiet --detach refs/fork-sync/conflicted
+          # The paths git itself says conflicted, computed now, before the model touches anything.
+          # Only these are staged afterwards, so nothing else the model changes can reach the commit.
+          OUT="$(git merge-tree --write-tree --name-only "$DEV_SHA" "$UPSTREAM_SHA" || true)"
+          sed -n '2,/^$/p' <<< "$OUT" | sed '/^$/d' | grep -v '^\.github/' > "$RUNNER_TEMP/conflicted.list" || true
+          if [ ! -s "$RUNNER_TEMP/conflicted.list" ]; then
+            echo "::error::Git reports no conflicted path to resolve."
+            exit 1
+          fi
+          echo "Conflicted paths:"
+          cat "$RUNNER_TEMP/conflicted.list"
+
+      # The model must not load configuration that upstream wrote: a project MCP server, a hook, a
+      # skill, a memory file or a git hook would run or steer it beside the Claude token. They are
+      # moved out of the working tree for the run, and put back afterwards.
+      - name: Set aside upstream's tool configuration
+        run: |
+          mkdir -p "$RUNNER_TEMP/aside"
+          for item in .mcp.json .claude CLAUDE.md CLAUDE.local.md AGENTS.md GEMINI.md .husky .cursor .cursorrules .vscode; do
+            if [ -e "$item" ]; then mv "$item" "$RUNNER_TEMP/aside/$item"; fi
+          done
+          cp .git/config "$RUNNER_TEMP/git-config.saved"
 
       # anthropics/claude-code-action v1.0.271. The prompt names no file, because file names come
       # from upstream. Only file tools are allowed, and the repository's own Claude settings are
@@ -185,8 +210,10 @@ jobs:
             --model claude-opus-5-5
             --effort high
             --max-turns 40
-            --tools Read,Edit,Write,Glob,Grep
+            --permission-mode acceptEdits
+            --strict-mcp-config
             --setting-sources user
+            --tools Read,Edit,Write,Glob,Grep
 
       - name: Write the merge commit
         env:
@@ -195,10 +222,17 @@ jobs:
           GIT_COMMITTER_NAME: github-actions[bot]
           GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
         run: |
-          # Tracked files only, so nothing the action left lying around is added.
-          git add -u
-          TREE="$(git write-tree)"
-          COMMIT="$(git commit-tree -p "$DEV_SHA" -p "$UPSTREAM_SHA" \
+          # Git runs nothing the model could have planted: its configuration is put back as it was,
+          # its hooks and its fsmonitor are switched off, and only the conflicted paths are staged.
+          cp "$RUNNER_TEMP/git-config.saved" .git/config
+          rm -rf .git/hooks .git/info/attributes
+          git_safe() { git -c core.hooksPath=/dev/null -c core.fsmonitor= -c core.attributesFile=/dev/null "$@"; }
+          while IFS= read -r path; do
+            git_safe add -- ":(literal)$path"
+          done < "$RUNNER_TEMP/conflicted.list"
+          TREE="$(git_safe write-tree)"
+          # This script writes the trailer, not the model, so it cannot be dropped or forged.
+          COMMIT="$(git_safe commit-tree -p "$DEV_SHA" -p "$UPSTREAM_SHA" \
             -m "Merge upstream into dev" -m "Resolved-by: claude" "$TREE")"
           git branch sync-candidate "$COMMIT"
           git bundle create "$RUNNER_TEMP/candidate.bundle" sync-candidate "^$DEV_SHA"
@@ -315,13 +349,14 @@ jobs:
           fi
           ./Scripts/fork-sync-verify-tree.sh "$DEV_SHA" "$UPSTREAM_SHA" "$CANDIDATE"
 
-      - name: Update main, then dev
+      # The fork's main is deliberately left alone. Mirroring it would copy upstream's workflow files
+      # onto a branch where they are active, and a new upstream workflow could then act with this
+      # repository's permissions. Upstream is fetched directly wherever it is needed.
+      - name: Push dev
         env:
           GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
         run: |
           gh auth setup-git
-          # GitHub's own sync-fork API: it needs no workflow permission, which the token lacks.
-          gh api -X POST "repos/$GITHUB_REPOSITORY/merge-upstream" -f branch=main > /dev/null
           # A fast-forward only: if dev moved, this is refused and nothing is half done.
           git push "https://github.com/$GITHUB_REPOSITORY.git" "$(git rev-parse sync-candidate):refs/heads/dev"
 
@@ -364,7 +399,7 @@ jobs:
         run: |
           TITLE="Upstream sync: a merge Claude resolved is waiting for review"
           BODY="Claude resolved a merge conflict, so no release was started. Read the merge on dev, then start Fork release by hand ($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/workflows/fork-release.yml). Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-          NUMBER="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "\"$TITLE\" in:title" --json number --jq '.[0].number // empty')"
+          NUMBER="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --author "app/github-actions" --search "\"$TITLE\" in:title" --json number --jq '.[0].number // empty')"
           # Once is enough: the daily run must not add a comment every day.
           if [ -n "$NUMBER" ]; then
             echo "Issue #$NUMBER already says so."
@@ -382,12 +417,13 @@ jobs:
           # shellcheck disable=SC2046 # one argument per fork tag is wanted
           VERSION="$(./Scripts/fork-next-version.sh "$UPSTREAM_BASE" $(git tag -l 'v*-fork.*'))"
           echo "Releasing $VERSION from $DEV_SHA."
-          STARTED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          # A minute early, so a runner clock that runs behind GitHub's cannot hide the new run.
+          STARTED="$(date -u -d '60 seconds ago' +%Y-%m-%dT%H:%M:%SZ)"
           gh workflow run fork-release.yml --repo "$GITHUB_REPOSITORY" --ref dev \
             -f version="$VERSION" -f publish=true -f expected_sha="$DEV_SHA"
           RUN_ID=""
-          for _ in $(seq 1 30); do
-            sleep 5
+          for _ in $(seq 1 24); do
+            sleep 10
             RUN_ID="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow fork-release.yml --event workflow_dispatch \
               --json databaseId,headSha,createdAt --jq "[.[] | select(.headSha == \"$DEV_SHA\" and .createdAt >= \"$STARTED\")][0].databaseId // empty")"
             [ -n "$RUN_ID" ] && break
@@ -396,7 +432,7 @@ jobs:
             echo "::error::The release run did not start."
             exit 1
           fi
-          gh run watch "$RUN_ID" --repo "$GITHUB_REPOSITORY" --exit-status
+          gh run watch "$RUN_ID" --repo "$GITHUB_REPOSITORY" --interval 30 --exit-status
 
   # One issue, kept up to date, whenever any job above failed.
   notify:
@@ -413,7 +449,7 @@ jobs:
         run: |
           TITLE="Upstream sync failed"
           BODY="The upstream sync failed. Nothing was pushed to dev unless the push job shows success. Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-          NUMBER="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "\"$TITLE\" in:title" --json number --jq '.[0].number // empty')"
+          NUMBER="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --author "app/github-actions" --search "\"$TITLE\" in:title" --json number --jq '.[0].number // empty')"
           if [ -n "$NUMBER" ]; then
             gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$BODY"
           else

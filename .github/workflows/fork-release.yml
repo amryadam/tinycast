@@ -30,8 +30,68 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Holds the signing key and can read the repository, but cannot write to it.
+  # Runs the checks and the Swift tests, which compile third-party code, so this job holds no
+  # secret and no environment. The job that holds the signing key runs none of that code.
+  gate:
+    if: github.ref == 'refs/heads/dev'
+    runs-on: xcode-27
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      # actions/checkout v7.0.1. Full history, because the gate compares with upstream's main.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate the version
+        run: ./Scripts/fork-release-validate.sh "$VERSION"
+
+      - name: Check the commit
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          if [ -n "$EXPECTED_SHA" ] && [ "$EXPECTED_SHA" != "$GITHUB_SHA" ]; then
+            echo "::error::This run builds $GITHUB_SHA, but $EXPECTED_SHA was expected. dev has moved."
+            exit 1
+          fi
+
+      # The fork's main is not kept in step with upstream, so upstream is fetched directly.
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/abue-ammar/tinycast.git
+          git fetch --quiet upstream main
+
+      - name: Select Xcode 27
+        run: |
+          # Real folders only: an image's Xcode_27.N.app symlink can point at a release candidate.
+          XCODE_PATH="$(find -E /Applications -maxdepth 1 -type d -regex '.*/Xcode_27(\.[0-9]+)*\.app' | sort -V | tail -n1)"
+          if [ -z "$XCODE_PATH" ]; then
+            echo "::error::No released Xcode 27.x found on this runner. Installed Xcodes:"
+            ls -d /Applications/*[Xx]code* || true
+            exit 1
+          fi
+          echo "Using $XCODE_PATH"
+          echo "DEVELOPER_DIR=$XCODE_PATH/Contents/Developer" >> "$GITHUB_ENV"
+
+      - name: Gate
+        env:
+          FORK_BASE: upstream/main
+        run: |
+          ./Scripts/fork-check.sh
+          ./Scripts/fork-test.sh
+          ./Scripts/run-tests.sh file-search-path-test
+          ./Scripts/run-tests.sh fork-update-test
+          ./Scripts/run-tests.sh updates-test
+          ./Scripts/run-tests.sh update-check-test
+
+  # Holds the signing key and can read the repository, but cannot write to it. It builds third-party
+  # sources, so it first refuses anything that could run a script of its own.
   build:
+    needs: gate
     if: github.ref == 'refs/heads/dev'
     runs-on: xcode-27
     timeout-minutes: 60
@@ -43,7 +103,7 @@ jobs:
     env:
       VERSION: ${{ inputs.version }}
     steps:
-      # actions/checkout v7.0.1. Full history, because the gate compares with origin/main.
+      # actions/checkout v7.0.1. Full history, for the upstream commit the notice names.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
@@ -89,13 +149,15 @@ jobs:
           echo "Using $XCODE_PATH"
           echo "DEVELOPER_DIR=$XCODE_PATH/Contents/Developer" >> "$GITHUB_ENV"
 
-      - name: Gate
-        env:
-          FORK_BASE: origin/main
+      - name: Fetch upstream
         run: |
-          ./Scripts/fork-check.sh
-          ./Scripts/fork-test.sh
-          ./Scripts/run-tests.sh file-search-path-test
+          git remote add upstream https://github.com/abue-ammar/tinycast.git
+          git fetch --quiet upstream main
+
+      # Before the key is imported: third-party sources may not bring a script or a package that
+      # would run while the key is in the keychain.
+      - name: Refuse build inputs that run code
+        run: ./Scripts/fork-check-build-inputs.sh
 
       - name: Lint the cask
         env:
@@ -246,7 +308,9 @@ jobs:
             echo "The release v$VERSION already exists with the same checksum; keeping it."
             exit 0
           fi
-          UPSTREAM_SHA="$(git merge-base origin/main HEAD)"
+          git remote add upstream https://github.com/abue-ammar/tinycast.git
+          git fetch --quiet upstream main
+          UPSTREAM_SHA="$(git merge-base upstream/main HEAD)"
           ./Scripts/fork-release-notes.sh "$VERSION" "$UPSTREAM_SHA" "$GITHUB_REPOSITORY" > "$RUNNER_TEMP/notes.md"
           gh release create "v$VERSION" \
             "$RUNNER_TEMP/dl/Tinycast-Fork-$VERSION.zip" \

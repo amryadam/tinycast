@@ -380,6 +380,7 @@ case "$1 $2" in
         case "$*" in
             *--input*) cat > "$STUB_DIR/api-stdin-$(wc -l < "$STUB_DIR/calls.log" | tr -d ' ')" ;;
             *-X*) ;;
+            *rulesets*) for n in ${STUB_RULESETS:-}; do echo "$n"; done ;;
             *deployment-branch-policies*) for n in ${STUB_POLICIES:-}; do echo "$n"; done ;;
         esac
         ;;
@@ -409,7 +410,7 @@ require_bootstrap() {
 test_bootstrap_dry_run() {
     require_bootstrap || return 0
     local sub out
-    for sub in environments tap identity; do
+    for sub in environments rulesets tap identity; do
         bootstrap_env "dry-$sub"
         out="$(run_bootstrap "$sub" --dry-run)" || fail "$sub --dry-run failed: $out"
         assert_contains "$out" "dry run"
@@ -435,6 +436,32 @@ test_bootstrap_environments_calls() {
     bootstrap_env env2
     STUB_POLICIES="dev" run_bootstrap environments > /dev/null || fail "environments failed on a rerun"
     grep -q 'POST.*deployment-branch-policies' "$BS/calls.log" && fail "created a policy that exists"
+    return 0
+}
+
+test_bootstrap_rulesets() {
+    require_bootstrap || return 0
+    local out files
+    bootstrap_env rs
+    out="$(run_bootstrap rulesets)" || fail "rulesets failed: $out"
+    [ "$(grep -c 'POST.*rulesets' "$BS/calls.log")" = 2 ] || fail "expected two rulesets to be created"
+    files="$(cat "$BS"/api-stdin-* 2>/dev/null)"
+    assert_contains "$files" '"include":["refs/heads/dev"]'
+    assert_contains "$files" '"include":["refs/tags/v*-fork.*"]'
+    assert_contains "$files" '"enforcement":"active"'
+    assert_contains "$files" '"bypass_actors":[]'
+    assert_contains "$files" '"type":"deletion"'
+    assert_contains "$files" '"type":"non_fast_forward"'
+    assert_contains "$files" '"type":"update"'
+    # Neither a pull request nor a status check may be demanded: the sync pushes to dev directly.
+    assert_lacks "$files" "pull_request"
+    assert_lacks "$files" "required_status_checks"
+    # Creating a tag stays allowed, because the release workflow makes them.
+    assert_lacks "$files" '"type":"creation"'
+    # Safe to repeat: a ruleset that exists is not created again.
+    bootstrap_env rs2
+    STUB_RULESETS="protect-dev protect-fork-tags" run_bootstrap rulesets > /dev/null || fail "rulesets failed on a rerun"
+    grep -q 'POST.*rulesets' "$BS/calls.log" && fail "created a ruleset that exists"
     return 0
 }
 
@@ -570,6 +597,24 @@ test_workflow_static() {
         return
     }
 
+    # The checks and the Swift tests compile third-party code, so they run in a job with no secret and
+    # no environment; the job with the signing key runs none of it.
+    local gate
+    gate="$(job_block "$wf" gate)"
+    [ -n "$gate" ] || fail "the workflow needs a gate job"
+    assert_lacks "$gate" "secrets."
+    assert_lacks "$gate" "environment:"
+    assert_lacks "$gate" ": write"
+    assert_contains "$gate" "fork-check.sh"
+    assert_contains "$gate" "run-tests.sh"
+    assert_contains "$gate" "FORK_BASE: upstream/main"
+    assert_contains "$build" "needs: gate"
+    assert_lacks "$build" "run-tests.sh"
+    assert_lacks "$build" "fork-check.sh"
+    assert_lacks "$build" "fork-test.sh"
+    # The fork's own main is not kept in step with upstream: nothing may read origin/main.
+    grep -q 'origin/main' "$wf" && fail "the workflow reads origin/main, which is not kept in step with upstream"
+
     grep -qx 'permissions: {}' "$wf" || fail "no top-level permissions: {}"
     grep -q '^  workflow_dispatch:' "$wf" || fail "workflow_dispatch is not a trigger"
     grep -Eq '^  (push|pull_request|pull_request_target|schedule|workflow_run|release|issues|issue_comment|repository_dispatch):' "$wf" \
@@ -633,6 +678,10 @@ test_workflow_static() {
     cleanup="$(step_line "$build" 'Remove the signing keychain')"
     upload="$(grep -n 'actions/upload-artifact@' <<< "$build" | head -1 | cut -d: -f1)"
     [ -n "$lint" ] && [ -n "$import" ] && [ "$lint" -lt "$import" ] || fail "the cask lint must run before the key is imported"
+    local guard
+    guard="$(step_line "$build" 'Refuse build inputs that run code')"
+    [ -n "$guard" ] && [ -n "$import" ] && [ "$guard" -lt "$import" ] || fail "the build inputs must be checked before the key is imported"
+    assert_contains "$build" "fork-check-build-inputs.sh"
     [ -n "$cleanup" ] && [ -n "$upload" ] && [ "$cleanup" -lt "$upload" ] || fail "the keychain must be removed before the upload"
     prepare="$(step_line "$publish" 'Prepare the tap')"
     release="$(step_line "$publish" 'Create the release')"
@@ -885,8 +934,25 @@ test_sync_verify_tree() {
     bad="$(forge "$d" "$cand" "$dev" "$up" bash -c "printf 'one\nfork-up-two\nthree\n' > Tinycast/Core.swift; echo evil >> a.txt")"
     expect_bad "$bad" "a resolution that also changes another file"
     expect_bad "$cand" "the conflicted state with its markers still in"
+    bad="$(forge "$d" "$cand" "$dev" "$up" bash -c "rm Tinycast/Core.swift; ln -s /etc/passwd Tinycast/Core.swift")"
+    expect_bad "$bad" "a resolution that turns the conflicted file into a symlink"
     bad="$(forge "$d" "$cand" "$dev" "$up" bash -c "printf 'one\nx\nthree\n' > Tinycast/Core.swift; rm upstream.txt")"
     expect_bad "$bad" "a resolution that drops a file upstream added"
+
+    # Upstream adds a path that differs from a fork script only by case. It merges cleanly, but on
+    # a Mac it would replace the fork's script, so the candidate must be refused.
+    local cx="$WORK/vt-case" blob
+    make_sync_repo "$cx"
+    # Plumbing with a private index: the case-insensitive working copy cannot hold both paths.
+    (cd "$cx" && export GIT_INDEX_FILE="$cx/.git/collide-index" && blob="$(echo evil | gitq hash-object -w --stdin)" \
+        && gitq read-tree up && gitq update-index --add --cacheinfo "100755,$blob,scripts/fork-x.sh" \
+        && gitq update-ref refs/heads/up "$(gitq commit-tree -p up -m collide "$(gitq write-tree)")")
+    on_branch "$cx" dev bash -c 'echo fork > fork.txt'
+    dev="$(cd "$cx" && git rev-parse dev)"
+    up="$(cd "$cx" && git rev-parse up)"
+    # git itself merges this cleanly, so build the candidate from git's own tree.
+    cand="$(cd "$cx" && gitq commit-tree -p "$dev" -p "$up" -m merge "$(git merge-tree --write-tree "$dev" "$up")")"
+    (cd "$cx" && "$script" "$dev" "$up" "$cand" > /dev/null 2>&1) && fail "accepted a merge with a case-colliding path"
 
     # A conflict in one of the fork's own files may not be resolved by the sync at all.
     local path fx
@@ -905,6 +971,73 @@ test_sync_verify_tree() {
         bad="$(forge "$fx" "$cand" "$dev" "$up" bash -c "echo resolved > $path")"
         (cd "$fx" && "$script" "$dev" "$up" "$bad" > /dev/null 2>&1) && fail "accepted: a resolution of a conflict in $path"
     done
+    return 0
+}
+
+# A repository whose HEAD tree is a copy of the real build inputs, to be altered per case.
+make_inputs_repo() {
+    mkdir -p "$1/Tinycast.xcodeproj/xcshareddata/xcschemes" && cd "$1" || return 1
+    gitq init -q
+    printf '// !$*UTF8*$!\n{ objects = { }; }\n' > Tinycast.xcodeproj/project.pbxproj
+    printf 'name: Tinycast\nsettings:\n  base:\n    A: b\n' > project.yml
+    printf '<Scheme>\n</Scheme>\n' > Tinycast.xcodeproj/xcshareddata/xcschemes/Tinycast.xcscheme
+    mkdir -p Scripts && echo x > Scripts/fork-build.sh
+    gitq add -A && gitq commit -qm base
+    cd - > /dev/null || return 1
+}
+
+test_build_inputs() {
+    local script="$ROOT/Scripts/fork-check-build-inputs.sh" d="$WORK/bi" case_dir
+    [ -x "$script" ] || {
+        fail "Scripts/fork-check-build-inputs.sh is missing or not executable"
+        return
+    }
+    make_inputs_repo "$d"
+    (cd "$d" && "$script" > /dev/null 2>&1) || fail "refused a plain project"
+
+    # Each case appends one thing to a file, commits it and expects a refusal.
+    refuses() { # NAME FILE TEXT
+        case_dir="$WORK/bi-$1"
+        make_inputs_repo "$case_dir"
+        (cd "$case_dir" && printf '%s\n' "$3" >> "$2" && gitq commit -qam change)
+        (cd "$case_dir" && "$script" > /dev/null 2>&1) && fail "accepted: $1"
+        return 0
+    }
+    refuses shellphase Tinycast.xcodeproj/project.pbxproj '/* Begin PBXShellScriptBuildPhase section */'
+    refuses remotepackage Tinycast.xcodeproj/project.pbxproj 'isa = XCRemoteSwiftPackageReference;'
+    refuses localpackage Tinycast.xcodeproj/project.pbxproj 'isa = XCLocalSwiftPackageReference;'
+    refuses packagedep Tinycast.xcodeproj/project.pbxproj 'isa = XCSwiftPackageProductDependency;'
+    refuses yml-scripts project.yml '    postBuildScripts:'
+    refuses yml-prebuild project.yml '    preBuildScripts:'
+    refuses yml-packages project.yml 'packages:'
+    refuses yml-gen project.yml 'options:'"
+"'  postGenCommand: ./x.sh'
+    refuses scheme-action Tinycast.xcodeproj/xcshareddata/xcschemes/Tinycast.xcscheme '<ExecutionAction ActionType = "x">'
+    refuses scheme-action-lc Tinycast.xcodeproj/xcshareddata/xcschemes/Tinycast.xcscheme '<executionaction>'
+
+    # A path that differs only by case lands on the same file on a Mac. It must be refused, also
+    # when only the path check is asked for.
+    case_dir="$WORK/bi-case"
+    make_inputs_repo "$case_dir"
+    (cd "$case_dir" && blob="$(echo evil | gitq hash-object -w --stdin)" \
+        && gitq update-index --add --cacheinfo "100755,$blob,scripts/fork-build.sh" && gitq commit -qm collide)
+    (cd "$case_dir" && "$script" > /dev/null 2>&1) && fail "accepted a case-colliding path"
+    (cd "$case_dir" && "$script" --paths-only > /dev/null 2>&1) && fail "--paths-only accepted a case-colliding path"
+
+    # --paths-only does not look inside the project.
+    case_dir="$WORK/bi-pathsonly"
+    make_inputs_repo "$case_dir"
+    (cd "$case_dir" && echo 'isa = XCRemoteSwiftPackageReference;' >> Tinycast.xcodeproj/project.pbxproj && gitq commit -qam pkg)
+    (cd "$case_dir" && "$script" --paths-only > /dev/null 2>&1) || fail "--paths-only refused a project it should not look inside"
+
+    # It reads the committed tree, not the working copy.
+    case_dir="$WORK/bi-wc"
+    make_inputs_repo "$case_dir"
+    echo 'isa = XCRemoteSwiftPackageReference;' >> "$case_dir/Tinycast.xcodeproj/project.pbxproj"
+    (cd "$case_dir" && "$script" > /dev/null 2>&1) || fail "looked at the working copy instead of HEAD"
+    (cd "$case_dir" && gitq commit -qam pkg && "$script" HEAD~1 > /dev/null 2>&1) || fail "did not read the tree-ish it was given"
+    (cd "$case_dir" && "$script" HEAD > /dev/null 2>&1) && fail "did not read HEAD"
+    (cd "$case_dir" && "$script" --nope > /dev/null 2>&1) && fail "accepted an unknown option"
     return 0
 }
 
@@ -993,7 +1126,28 @@ test_sync_workflow_static() {
     grep -Eq -- '--tools Read,Edit,Write,Glob,Grep[[:space:]]*$' <<< "$resolve" || fail "the Claude tools must be exactly Read,Edit,Write,Glob,Grep"
     assert_contains "$resolve" "--setting-sources user"
     assert_contains "$resolve" "Resolved-by: claude"
-    assert_contains "$resolve" "git add -u"
+    # Edits are allowed by the permission mode, because an allow-list entry does not cover them in
+    # agent mode; MCP servers are never loaded; only the conflicted paths are staged, by a git that
+    # runs no hook; and the repository's own tool configuration is moved out of the way.
+    assert_contains "$resolve" "--permission-mode acceptEdits"
+    assert_contains "$resolve" "--strict-mcp-config"
+    assert_contains "$resolve" "core.hooksPath=/dev/null"
+    assert_contains "$resolve" "core.fsmonitor="
+    assert_contains "$resolve" "conflicted.list"
+    assert_contains "$resolve" ".mcp.json"
+    assert_contains "$resolve" "CLAUDE.md"
+    assert_lacks "$resolve" "git add -u"
+    assert_lacks "$resolve" "git add -A"
+    assert_lacks "$resolve" "--dangerously"
+    assert_lacks "$resolve" "--allowedTools"
+
+    # Mirroring upstream's main would activate upstream's workflow files here.
+    assert_lacks "$push" "merge-upstream"
+    grep -q 'merge-upstream' "$wf" && fail "the workflow mirrors upstream's main with merge-upstream"
+    grep -q 'origin/main' "$wf" && fail "the workflow reads origin/main, which is not kept in step with upstream"
+    assert_contains "$release" "--interval 30"
+    [ "$(grep -c -- '--author "app/github-actions"' "$wf")" = "$(grep -c 'gh issue list' "$wf")" ] \
+        || fail "every issue search must only match issues the workflow's own bot opened"
 
     # Secrets stay in their own job.
     [ "$(grep -c 'SYNC_TOKEN' <<< "$push")" -ge 1 ] || fail "the push job does not use SYNC_TOKEN"
@@ -1060,10 +1214,10 @@ test_sync_workflow_static() {
 
 ALL=(validate_accepts validate_rejects build_print_settings import_requires_env import_cleanup_is_safe
     package_ok package_rejects package_authority package_relative_paths notes_licence_items notes_rejects cask_contents cask_rejects cask_from_release cask_style
-    bootstrap_dry_run bootstrap_environments_calls bootstrap_identity_calls bootstrap_tap_calls
+    bootstrap_dry_run bootstrap_environments_calls bootstrap_rulesets bootstrap_identity_calls bootstrap_tap_calls
     bootstrap_refuses_overwrite bootstrap_no_leftovers bootstrap_rejects_bad_args
     workflow_static update_path
-    next_version sync_merge sync_verify_tree sync_decide sync_workflow_static)
+    build_inputs next_version sync_merge sync_verify_tree sync_decide sync_workflow_static)
 
 if [ $# -gt 0 ]; then
     names=("$@")
