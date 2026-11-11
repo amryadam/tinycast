@@ -13,6 +13,11 @@ struct AvailableRelease: Codable, Hashable, Sendable {
 enum ReleaseFeed {
     static let repository = "abue-ammar/tinycast"
 
+    /// FORK(fork-update): where a channel reads its releases.
+    static func releasesURL(for channel: ReleaseChannel) -> URL {
+        URL(string: "https://api.github.com/repos/\(channel.repository)/releases?per_page=20")!
+    }
+
     /// The only artifact with an x86_64 slice, so the only one an Intel Mac can install.
     private static let universalMarker = "-Universal-"
 
@@ -40,6 +45,8 @@ enum ReleaseFeed {
             let version = AppVersion(entry.tagName),
             // A tag disagreeing with the prerelease flag is a mis-published release, not an update.
             version.isPrerelease == entry.prerelease,
+            // FORK(fork-update): the fork takes only its own revisions, and nobody else takes them.
+            (channel == .fork) == (version.fork != nil),
             let asset = asset(from: entry.assets, for: architecture)
         else { return nil }
         return AvailableRelease(

@@ -4,8 +4,7 @@ import Foundation
 @MainActor
 @Observable
 final class UpdateCheckStore {
-    private nonisolated static let endpoint = URL(
-        string: "https://api.github.com/repos/\(ReleaseFeed.repository)/releases?per_page=20")!
+    // FORK(fork-update): the request URL comes from `ReleaseFeed.releasesURL(for:)`, per channel.
     /// Daily, measured from `lastCheckedAt`, so relaunching never re-asks GitHub.
     private static let refreshInterval: TimeInterval = 24 * 3600
     /// Shorter retry, so a machine offline at launch sees a release soon after it reconnects.
@@ -36,12 +35,13 @@ final class UpdateCheckStore {
         runningVersion: AppVersion? = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String)
             .flatMap(AppVersion.init),
         fileURL: URL = AppPaths.caches().appendingPathComponent("update-check.json"),
-        fetch: @escaping @Sendable () async -> Data? = UpdateCheckStore.body
+        fetch: (@Sendable () async -> Data?)? = nil  // FORK(fork-update)
     ) {
         self.channel = channel
         self.runningVersion = runningVersion
         self.fileURL = fileURL
-        self.fetch = fetch
+        // FORK(fork-update): the default request follows the channel's repository.
+        self.fetch = fetch ?? { await UpdateCheckStore.body(for: channel) }
         guard let data = try? Data(contentsOf: fileURL),
             let cache = try? JSONDecoder().decode(Cache.self, from: data)
         else { return }
@@ -148,8 +148,9 @@ final class UpdateCheckStore {
         return URLSession(configuration: config)
     }()
 
-    private nonisolated static func body() async -> Data? {
-        var request = URLRequest(url: endpoint, timeoutInterval: 20)
+    // FORK(fork-update)
+    private nonisolated static func body(for channel: ReleaseChannel) async -> Data? {
+        var request = URLRequest(url: ReleaseFeed.releasesURL(for: channel), timeoutInterval: 20)
         // GitHub rejects an API request carrying no User-Agent outright.
         request.setValue("Tinycast", forHTTPHeaderField: "User-Agent")
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
