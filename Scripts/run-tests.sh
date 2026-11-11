@@ -119,6 +119,8 @@ run slow -O fuzz-test      $L/SearchRelevance.swift $L/ScriptRomanization.swift 
 FS=Tinycast/Features/FileSearch
 FILE_INDEX="$FS/Service/FileIndex.swift $FS/Service/FileIndexSnapshot.swift $FS/Service/FileIndexCrawler.swift"
 run file-search-test       $FS/Model/*.swift
+# FORK(path-query)
+run file-search-path-test  $FS/Model/*.swift $FS/Service/FileSearchPathLookup.swift
 run file-index-test        $FS/Model/*.swift $FILE_INDEX
 run file-search-session-test $FS/Model/*.swift $FS/Service/FileSearchSession.swift $FILE_INDEX
 run menu-search-test       $L/SearchRelevance.swift \
