@@ -7,7 +7,8 @@
 #   Options: --repo OWNER/NAME (the fork, default amryadam/tinycast)
 #            --tap  OWNER/NAME (the Homebrew tap, default amryadam/homebrew-fork)
 #
-#   environments  Creates the environments fork-build and fork-publish, each usable from dev only.
+#   environments  Creates the environments fork-build, fork-publish, fork-sync and fork-sync-claude,
+#                 each usable from dev only.
 #   tap           Creates the public tap repository, makes a deploy key for it, and stores the
 #                 private key as TAP_DEPLOY_KEY in fork-publish.
 #   identity      Makes the Tinycast Self-Signed code-signing identity and stores it as
@@ -108,7 +109,7 @@ make_work() {
 
 do_environments() {
     local env policies
-    for env in fork-build fork-publish; do
+    for env in fork-build fork-publish fork-sync fork-sync-claude; do
         gh_write api -X PUT "repos/$REPO/environments/$env" --input - \
             <<< '{"deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true}}' > /dev/null
         policies="$(gh api "repos/$REPO/environments/$env/deployment-branch-policies" \
@@ -120,7 +121,7 @@ do_environments() {
                 <<< '{"name":"dev","type":"branch"}' > /dev/null
         fi
     done
-    echo "✓ Environments fork-build and fork-publish are limited to the branch dev in $REPO."
+    echo "✓ Environments fork-build, fork-publish, fork-sync and fork-sync-claude are limited to the branch dev in $REPO."
 }
 
 do_tap() {
