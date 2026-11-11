@@ -200,6 +200,7 @@ cask "tinycast-fork" do
   zap trash: [
     "~/.config/com.amryadam.tinycast",
     "~/Library/Application Support/com.amryadam.tinycast",
+    "~/Library/Application Support/CrashReporter/Tinycast Fork_*.plist",
     "~/Library/Caches/com.amryadam.tinycast",
     "~/Library/Caches/com.amryadam.tinycast.dictation",
     "~/Library/Preferences/com.amryadam.tinycast.plist",
