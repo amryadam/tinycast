@@ -792,6 +792,8 @@ run updates-test           Tinycast/Features/Updates/Model/*.swift \
 run update-check-test      Tinycast/Features/Updates/Model/*.swift \
                            Tinycast/Features/Updates/Service/UpdateCheckStore.swift \
                            Tinycast/Platform/AppPaths.swift
+# FORK(fork-update)
+run fork-update-test       Tinycast/Features/Updates/Model/*.swift
 run support-test           Tinycast/Features/Support/Model/*.swift
 run ai-provider-test       Tinycast/Features/Settings/AppSettingsKey.swift \
                            Tinycast/Features/AI/Model/*.swift \

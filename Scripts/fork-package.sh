@@ -35,7 +35,7 @@ fi
 
 APP_NAME="${FORK_APP_NAME:-Tinycast Fork}"
 BUNDLE_ID="${FORK_BUNDLE_ID:-com.amryadam.tinycast}"
-BASE_VERSION="$("$HERE/Scripts/fork-release-validate.sh" "$VERSION")"
+"$HERE/Scripts/fork-release-validate.sh" "$VERSION" > /dev/null
 
 [ -d "$APP" ] || die "no app at $APP"
 [ "$(basename "$APP")" = "$APP_NAME.app" ] || die "the app is named $(basename "$APP"), expected $APP_NAME.app"
@@ -45,7 +45,8 @@ PLIST="$APP/Contents/Info.plist"
 BUILT_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$PLIST")"
 [ "$BUILT_ID" = "$BUNDLE_ID" ] || die "bundle id is '$BUILT_ID', expected '$BUNDLE_ID'"
 BUILT_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PLIST")"
-[ "$BUILT_VERSION" = "$BASE_VERSION" ] || die "app version is '$BUILT_VERSION', expected '$BASE_VERSION'"
+# The full fork version, so the in-app updater can tell one fork revision from the next.
+[ "$BUILT_VERSION" = "$VERSION" ] || die "app version is '$BUILT_VERSION', expected '$VERSION'"
 
 codesign --verify --deep --strict "$APP" 2> /dev/null || die "the signature of $APP does not verify"
 if [ -n "$AUTHORITY" ]; then

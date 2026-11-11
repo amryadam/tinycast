@@ -7,6 +7,8 @@ struct AppVersion: Comparable, Hashable, Sendable, CustomStringConvertible {
     let patch: Int
     /// Nil on a stable release, which outranks every prerelease of the same triple.
     let beta: Int?
+    /// FORK(fork-update): the fork's own revision, `-fork.N`. Nil on every upstream version.
+    let fork: Int?
 
     init?(_ text: String) {
         var body = Substring(text.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -22,13 +24,23 @@ struct AppVersion: Comparable, Hashable, Sendable, CustomStringConvertible {
         else { return nil }
 
         if halves.count == 2 {
-            // `beta` is the only prerelease channel that ships, so anything else is unreadable.
+            // `beta` is the only prerelease channel that ships, and `fork` is the fork's own
+            // revision (FORK(fork-update)), so anything else is unreadable.
             let suffix = halves[1].split(separator: ".", omittingEmptySubsequences: false)
-            guard suffix.count == 2, suffix[0] == "beta", let count = Self.number(suffix[1])
-            else { return nil }
-            beta = count
+            // FORK(fork-update)
+            guard suffix.count == 2, let count = Self.number(suffix[1]) else { return nil }
+            switch suffix[0] {
+            case "beta":
+                beta = count
+                fork = nil
+            case "fork":
+                beta = nil
+                fork = count
+            default: return nil
+            }
         } else {
             beta = nil
+            fork = nil  // FORK(fork-update)
         }
         self.major = major
         self.minor = minor
@@ -39,6 +51,8 @@ struct AppVersion: Comparable, Hashable, Sendable, CustomStringConvertible {
 
     var description: String {
         let triple = "\(major).\(minor).\(patch)"
+        // FORK(fork-update)
+        if let fork { return "\(triple)-fork.\(fork)" }
         return beta.map { "\(triple)-beta.\($0)" } ?? triple
     }
 
@@ -46,6 +60,8 @@ struct AppVersion: Comparable, Hashable, Sendable, CustomStringConvertible {
         if lhs.major != rhs.major { return lhs.major < rhs.major }
         if lhs.minor != rhs.minor { return lhs.minor < rhs.minor }
         if lhs.patch != rhs.patch { return lhs.patch < rhs.patch }
+        // FORK(fork-update): a fork revision outranks its base, and the base outranks any prerelease.
+        if lhs.fork != rhs.fork { return (lhs.fork ?? -1) < (rhs.fork ?? -1) }
         switch (lhs.beta, rhs.beta) {
         case (nil, nil): return false
         // A prerelease leads to its release, so it sorts below one and never above it.
