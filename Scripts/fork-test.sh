@@ -424,8 +424,9 @@ test_bootstrap_environments_calls() {
     local out env
     bootstrap_env env
     out="$(run_bootstrap environments)" || fail "environments failed: $out"
-    for env in fork-build fork-publish; do
-        grep -q "environments/$env" "$BS/calls.log" || fail "no call for $env"
+    for env in fork-build fork-publish fork-sync fork-sync-claude; do
+        grep -q "environments/$env " "$BS/calls.log" || fail "no call for $env"
+        grep -q "environments/$env/deployment-branch-policies" "$BS/calls.log" || fail "no dev-only branch policy for $env"
     done
     grep -q 'deployment-branch-policies' "$BS/calls.log" || fail "no branch policy created"
     assert_contains "$(cat "$BS"/api-stdin-* 2>/dev/null)" '"name":"dev"'
@@ -923,12 +924,126 @@ test_sync_decide() {
     return 0
 }
 
+test_sync_workflow_static() {
+    local wf="${FORK_SYNC_WORKFLOW:-$ROOT/.github/workflows/fork-sync.yml}" detect resolve verify push release notify bad
+    [ -f "$wf" ] || {
+        fail "the workflow is missing: $wf"
+        return
+    }
+    if command -v actionlint > /dev/null; then
+        printf 'self-hosted-runner:\n  labels:\n    - xcode-27\n' > "$WORK/actionlint-sync.yaml"
+        actionlint -config-file "$WORK/actionlint-sync.yaml" "$wf" || fail "actionlint found problems"
+    else
+        echo "  (actionlint is not installed, so its checks are skipped)"
+    fi
+    detect="$(job_block "$wf" detect)"
+    resolve="$(job_block "$wf" resolve)"
+    verify="$(job_block "$wf" verify)"
+    push="$(job_block "$wf" push)"
+    release="$(job_block "$wf" release)"
+    notify="$(job_block "$wf" notify)"
+    [ -n "$detect" ] && [ -n "$resolve" ] && [ -n "$verify" ] && [ -n "$push" ] && [ -n "$release" ] && [ -n "$notify" ] || {
+        fail "the workflow needs the jobs detect, merge, resolve, verify, push, release and notify"
+        return
+    }
+
+    grep -qx 'permissions: {}' "$wf" || fail "no top-level permissions: {}"
+    grep -q '^  workflow_dispatch:' "$wf" || fail "workflow_dispatch is not a trigger"
+    grep -q '^  schedule:' "$wf" || fail "schedule is not a trigger"
+    # Only the lines of the top-level on: block count as triggers; jobs are indented the same way.
+    awk '/^on:/ { on = 1; next } /^[^ #]/ { on = 0 } on' "$wf" \
+        | grep -Eq '^  (push|pull_request|pull_request_target|workflow_run|release|issues|issue_comment|repository_dispatch):' \
+        && fail "the workflow has a trigger other than schedule and workflow_dispatch"
+    grep -q 'concurrency:' "$wf" || fail "no concurrency group"
+    assert_contains "$detect" "vars.FORK_SYNC_SCHEDULE == 'on'"
+    assert_contains "$detect" "github.ref == 'refs/heads/dev'"
+
+    # The Claude job: only its own token, no write access, file tools only, a model and an effort.
+    assert_contains "$resolve" "environment: fork-sync-claude"
+    assert_contains "$resolve" "contents: read"
+    assert_contains "$resolve" "CLAUDE_CODE_OAUTH_TOKEN"
+    assert_lacks "$resolve" "SYNC_TOKEN"
+    assert_lacks "$resolve" "git push"
+    assert_lacks "$resolve" ": write"
+    assert_contains "$resolve" "github_token:"
+    assert_contains "$resolve" "--model claude-"
+    assert_contains "$resolve" "--effort "
+    assert_contains "$resolve" "--max-turns "
+    # Exactly these tools: a longer list would still contain this one as a prefix.
+    grep -Eq -- '--tools Read,Edit,Write,Glob,Grep[[:space:]]*$' <<< "$resolve" || fail "the Claude tools must be exactly Read,Edit,Write,Glob,Grep"
+    assert_contains "$resolve" "--setting-sources user"
+    assert_contains "$resolve" "Resolved-by: claude"
+    assert_contains "$resolve" "git add -u"
+
+    # Secrets stay in their own job.
+    [ "$(grep -c 'SYNC_TOKEN' <<< "$push")" -ge 1 ] || fail "the push job does not use SYNC_TOKEN"
+    [ "$(grep -c 'SYNC_TOKEN' "$wf")" = "$(grep -c 'SYNC_TOKEN' <<< "$push")" ] || fail "SYNC_TOKEN appears outside the push job"
+    [ "$(grep -c 'CLAUDE_CODE_OAUTH_TOKEN' "$wf")" = "$(grep -c 'CLAUDE_CODE_OAUTH_TOKEN' <<< "$resolve")" ] \
+        || fail "the Claude token appears outside the resolve job"
+    assert_lacks "$verify" "secrets."
+    assert_lacks "$detect" "secrets."
+    assert_contains "$push" "environment: fork-sync"
+
+    # The job that runs merged code holds nothing and cannot write; the job that writes runs none.
+    assert_contains "$verify" "contents: read"
+    assert_lacks "$verify" ": write"
+    assert_lacks "$verify" "git push"
+    assert_lacks "$verify" "gh api -X"
+    assert_lacks "$verify" "environment:"
+    for forbidden in xcodebuild run-tests.sh fork-test.sh fork-check.sh "bash -c"; do
+        assert_lacks "$push" "$forbidden"
+    done
+    assert_contains "$push" "fork-sync-verify-tree.sh"
+    assert_contains "$push" "VERIFIED_CANDIDATE"
+    assert_lacks "$push" "--force"
+
+    # Order. Verify the tree before any merged code is checked out, and before anything is pushed.
+    local verify_line checkout_line gate_line tree_line push_line
+    verify_line="$(grep -n 'fork-sync-verify-tree.sh' <<< "$verify" | head -1 | cut -d: -f1)"
+    # shellcheck disable=SC2016 # a literal $CANDIDATE is wanted
+    checkout_line="$(grep -n 'git checkout --quiet --detach "\$CANDIDATE"' <<< "$verify" | head -1 | cut -d: -f1)"
+    gate_line="$(grep -n 'fork-check.sh' <<< "$verify" | head -1 | cut -d: -f1)"
+    [ -n "$verify_line" ] && [ -n "$checkout_line" ] && [ "$verify_line" -lt "$checkout_line" ] \
+        || fail "the tree must be verified before the merged code is checked out"
+    [ -n "$gate_line" ] && [ "$checkout_line" -lt "$gate_line" ] || fail "the gate must run on the merged code"
+    tree_line="$(grep -n 'fork-sync-verify-tree.sh' <<< "$push" | head -1 | cut -d: -f1)"
+    push_line="$(grep -n 'git push' <<< "$push" | head -1 | cut -d: -f1)"
+    [ -n "$tree_line" ] && [ -n "$push_line" ] && [ "$tree_line" -lt "$push_line" ] || fail "the push job must re-verify before it pushes"
+
+    assert_contains "$release" "fork-next-version.sh"
+    assert_contains "$release" "fork-sync-decide.sh"
+    assert_contains "$release" "expected_sha"
+    assert_contains "$release" "gh run watch"
+    assert_contains "$release" "actions: write"
+    assert_contains "$notify" "if: \${{ failure() }}"
+    assert_contains "$notify" "issues: write"
+
+    # No expression is spliced into a shell script, and no input is read outside env: or with:.
+    bad="$(awk '
+        /^[[:space:]]*run:[[:space:]]*[|>]?[[:space:]]*$/ { match($0, /^ */); runind = RLENGTH; inrun = 1; next }
+        inrun { match($0, /^ */); if ($0 !~ /^[[:space:]]*$/ && RLENGTH <= runind) inrun = 0 }
+        inrun && /\$\{\{/ { print NR ": " $0 }
+    ' "$wf")"
+    [ -z "$bad" ] || fail "an expression is spliced into a run script: $bad"
+    bad="$(awk '
+        /^[[:space:]]*(env|with):[[:space:]]*$/ { match($0, /^ */); ind = RLENGTH; inblock = 1; next }
+        inblock { match($0, /^ */); if ($0 !~ /^[[:space:]]*$/ && RLENGTH <= ind) inblock = 0 }
+        /\$\{\{ *(inputs|secrets|github\.event)[.[]/ && !inblock { print NR ": " $0 }
+    ' "$wf")"
+    [ -z "$bad" ] || fail "an input or secret is used outside env: and with: $bad"
+
+    bad="$(grep -E '^[[:space:]]*(- )?uses:' "$wf" | grep -vE '@[0-9a-f]{40}[[:space:]]*$' || true)"
+    [ -z "$bad" ] || fail "an action is not pinned to a commit: $bad"
+    [ "$(grep -c 'actions/checkout@' "$wf")" = "$(grep -c 'persist-credentials: false' "$wf")" ] \
+        || fail "every checkout must set persist-credentials: false"
+}
+
 ALL=(validate_accepts validate_rejects build_print_settings import_requires_env import_cleanup_is_safe
     package_ok package_rejects package_authority package_relative_paths notes_licence_items notes_rejects cask_contents cask_rejects cask_from_release cask_style
     bootstrap_dry_run bootstrap_environments_calls bootstrap_identity_calls bootstrap_tap_calls
     bootstrap_refuses_overwrite bootstrap_no_leftovers bootstrap_rejects_bad_args
     workflow_static update_path
-    next_version sync_merge sync_verify_tree sync_decide)
+    next_version sync_merge sync_verify_tree sync_decide sync_workflow_static)
 
 if [ $# -gt 0 ]; then
     names=("$@")
