@@ -20,6 +20,8 @@ Each feature has its own file here, so two features never edit the same document
 4. Run `./Scripts/fork-check.sh` before committing.
 5. One feature per branch, merged into `dev` with `git merge --no-ff`.
 6. A conflict in the generated `Tinycast.xcodeproj/project.pbxproj` is resolved by taking upstream's file and running `xcodegen generate`, never by merging by hand.
+7. Once `dev` is the fork's default branch, update `main` only with `gh repo sync amryadam/tinycast -b main`; a plain `gh repo sync` would overwrite `dev`.
+8. After merging upstream into `dev`, run `gh workflow list --all --repo amryadam/tinycast` and disable any upstream workflow that is new, so only `Fork release` runs on the fork.
 
 The generated project file cannot carry a marker, so the check does not ask for one there.
 Find every hook in upstream code with:
@@ -35,7 +37,7 @@ grep -rn 'FORK(' Tinycast Tests Scripts
 | `upstream` | The maintainer's repository, read-only for us. |
 | `origin` | This fork. `remote.pushDefault` is set to it, so a plain push never reaches upstream. |
 | `main` | A mirror of `upstream/main`. It only fast-forwards and carries no fork commits. |
-| `dev` | `main` plus this tooling plus every finished feature. The app is built from it. |
+| `dev` | `main` plus this tooling plus every finished feature. The app is built from it, and it is the fork's default branch once the release workflow is set up. |
 | `feature/<name>` | One feature, branched from `dev`. |
 | `fork/tooling` | The tooling in this directory, merged into `dev` once. |
 

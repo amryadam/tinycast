@@ -1,0 +1,249 @@
+# Builds the fork on GitHub, signs it with the fork's own identity, and optionally publishes it.
+# See docs/fork/fork-release.md and docs/fork/fork-release-spec.md.
+#
+# Run it from the dev branch only. `publish: false` is a dry run that builds and uploads a
+# one-day artifact and publishes nothing. Inputs and secrets are read through `env:` only, so
+# nothing is spliced into a shell script.
+name: Fork release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Fork version, MAJOR.MINOR.PATCH-fork.N, for example 0.12.11-fork.1
+        type: string
+        required: true
+      publish:
+        description: Publish the release and update the tap. Off builds and uploads an artifact only.
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: fork-release
+  cancel-in-progress: false
+
+jobs:
+  # Holds the signing key and can read the repository, but cannot write to it.
+  build:
+    if: github.ref == 'refs/heads/dev'
+    runs-on: xcode-27
+    timeout-minutes: 60
+    environment: fork-build
+    permissions:
+      contents: read
+    outputs:
+      sha256: ${{ steps.package.outputs.sha256 }}
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      # actions/checkout v7.0.1. Full history, because the gate compares with origin/main.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate the version
+        run: ./Scripts/fork-release-validate.sh "$VERSION"
+
+      - name: Check that the tag is free
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if out="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v$VERSION" 2>&1)"; then
+            echo "::error::The tag v$VERSION already exists. Use the next fork number."
+            exit 1
+          fi
+          case "$out" in
+            *"Not Found"* | *404*) echo "The tag v$VERSION is free." ;;
+            *)
+              echo "::error::Could not check the tag: $out"
+              exit 1
+              ;;
+          esac
+
+      - name: Select Xcode 27
+        run: |
+          # Real folders only: an image's Xcode_27.N.app symlink can point at a release candidate.
+          XCODE_PATH="$(find -E /Applications -maxdepth 1 -type d -regex '.*/Xcode_27(\.[0-9]+)*\.app' | sort -V | tail -n1)"
+          if [ -z "$XCODE_PATH" ]; then
+            echo "::error::No released Xcode 27.x found on this runner. Installed Xcodes:"
+            ls -d /Applications/*[Xx]code* || true
+            exit 1
+          fi
+          echo "Using $XCODE_PATH"
+          echo "DEVELOPER_DIR=$XCODE_PATH/Contents/Developer" >> "$GITHUB_ENV"
+
+      - name: Gate
+        env:
+          FORK_BASE: origin/main
+        run: |
+          ./Scripts/fork-check.sh
+          ./Scripts/fork-test.sh
+          ./Scripts/run-tests.sh file-search-path-test
+
+      - name: Lint the cask
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_ANALYTICS: "1"
+        run: |
+          # Run before the signing key is imported, so Homebrew's gems never run beside the key.
+          # Homebrew audits a cask by name, and only from a tap it trusts, so use a throwaway local one.
+          brew tap-new --no-git local/fork-lint
+          brew trust --tap local/fork-lint
+          CASK="$(brew --repository local/fork-lint)/Casks/tinycast-fork.rb"
+          # Any well-formed checksum will do: style and an offline audit do not check it, and the
+          # real zip does not exist yet, because the signing key is not imported until after this.
+          SUM="0000000000000000000000000000000000000000000000000000000000000000"
+          FORK_REPO="$GITHUB_REPOSITORY" ./Scripts/fork-cask.sh "$VERSION" "$SUM" "$CASK"
+          brew style "$CASK"
+          brew audit --cask --strict local/fork-lint/tinycast-fork
+
+      - name: Import the signing identity
+        env:
+          P12_BASE64: ${{ secrets.SIGNING_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.SIGNING_P12_PASSWORD }}
+        run: ./Scripts/fork-import-identity.sh
+
+      - name: Build
+        env:
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          BASE="$(./Scripts/fork-release-validate.sh "$VERSION")"
+          export FORK_BUILD_DIR="$RUNNER_TEMP/DerivedData"
+          FORK_VERSION="$BASE" FORK_BUILD_NUMBER="$RUN_NUMBER" ./Scripts/fork-build.sh Release
+
+      - name: Package
+        id: package
+        run: |
+          APP="$RUNNER_TEMP/DerivedData/Build/Products/Release/Tinycast Fork.app"
+          SUM="$(./Scripts/fork-package.sh "$APP" "$VERSION" "$RUNNER_TEMP/out" --require-authority "Tinycast Self-Signed")"
+          echo "sha256=$SUM" >> "$GITHUB_OUTPUT"
+
+      # The key is no longer needed, so the keychain goes before anything else runs.
+      - name: Remove the signing keychain
+        run: ./Scripts/fork-import-identity.sh --cleanup
+
+      # actions/upload-artifact v7.0.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: fork-release
+          path: ${{ runner.temp }}/out/*
+          retention-days: 1
+          if-no-files-found: error
+
+      # Again, in case an earlier step failed before the one above.
+      - name: Clean up the signing keychain
+        if: always()
+        run: ./Scripts/fork-import-identity.sh --cleanup
+
+  # Can write releases, and never sees the signing key.
+  publish:
+    if: inputs.publish
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: fork-publish
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ inputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate the version
+        run: ./Scripts/fork-release-validate.sh "$VERSION"
+
+      # actions/download-artifact v8.0.2
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: fork-release
+          path: ${{ runner.temp }}/dl
+
+      - name: Verify the download
+        env:
+          EXPECTED_SHA256: ${{ needs.build.outputs.sha256 }}
+        run: |
+          ZIP="$RUNNER_TEMP/dl/Tinycast-Fork-$VERSION.zip"
+          ACTUAL="$(sha256sum "$ZIP" | cut -d' ' -f1)"
+          if [ "$ACTUAL" != "$EXPECTED_SHA256" ]; then
+            echo "::error::The downloaded zip is $ACTUAL, but the build job made $EXPECTED_SHA256."
+            exit 1
+          fi
+          (cd "$RUNNER_TEMP/dl" && sha256sum -c "Tinycast-Fork-$VERSION.zip.sha256")
+
+      # The tap is prepared before the release is made, so a bad deploy key fails the run while
+      # nothing is public yet.
+      - name: Prepare the tap
+        env:
+          TAP_DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          KEY="$RUNNER_TEMP/tap_key"
+          (umask 077 && printf '%s\n' "$TAP_DEPLOY_KEY" > "$KEY")
+          # GitHub's own host keys, from its API, so the first connection is not taken on trust.
+          gh api meta --jq '.ssh_keys[] | "github.com " + .' > "$RUNNER_TEMP/known_hosts"
+          export GIT_SSH_COMMAND="ssh -i $KEY -o IdentitiesOnly=yes -o UserKnownHostsFile=$RUNNER_TEMP/known_hosts -o StrictHostKeyChecking=yes"
+          git clone "git@github.com:$OWNER/homebrew-fork.git" "$RUNNER_TEMP/tap"
+          # A push with nothing to push proves the key can write, before anything is public.
+          git -C "$RUNNER_TEMP/tap" push --dry-run origin HEAD
+          SUM="$(cut -d' ' -f1 "$RUNNER_TEMP/dl/Tinycast-Fork-$VERSION.zip.sha256")"
+          FORK_REPO="$GITHUB_REPOSITORY" ./Scripts/fork-cask.sh "$VERSION" "$SUM" "$RUNNER_TEMP/tap/Casks/tinycast-fork.rb"
+          cd "$RUNNER_TEMP/tap"
+          git add Casks/tinycast-fork.rb
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -m "Update tinycast-fork to $VERSION"
+
+      # Safe to re-run: a release that already carries the same checksum is kept.
+      - name: Create the release
+        env:
+          EXPECTED_SHA256: ${{ needs.build.outputs.sha256 }}
+        run: |
+          if gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            PUBLISHED="$(gh release download "v$VERSION" --repo "$GITHUB_REPOSITORY" \
+              --pattern "Tinycast-Fork-$VERSION.zip.sha256" --output - | cut -d' ' -f1)"
+            if [ "$PUBLISHED" != "$EXPECTED_SHA256" ]; then
+              echo "::error::The release v$VERSION exists with a different checksum ($PUBLISHED). Use the next fork number."
+              exit 1
+            fi
+            echo "The release v$VERSION already exists with the same checksum; keeping it."
+            exit 0
+          fi
+          UPSTREAM_SHA="$(git merge-base origin/main HEAD)"
+          ./Scripts/fork-release-notes.sh "$VERSION" "$UPSTREAM_SHA" "$GITHUB_REPOSITORY" > "$RUNNER_TEMP/notes.md"
+          gh release create "v$VERSION" \
+            "$RUNNER_TEMP/dl/Tinycast-Fork-$VERSION.zip" \
+            "$RUNNER_TEMP/dl/Tinycast-Fork-$VERSION.zip.sha256" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Tinycast Fork $VERSION" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
+            --latest
+
+      - name: Push the tap
+        run: |
+          export GIT_SSH_COMMAND="ssh -i $RUNNER_TEMP/tap_key -o IdentitiesOnly=yes -o UserKnownHostsFile=$RUNNER_TEMP/known_hosts -o StrictHostKeyChecking=yes"
+          cd "$RUNNER_TEMP/tap"
+          # A rebase and retry, never a force push.
+          for attempt in 1 2 3; do
+            if git push origin HEAD; then
+              exit 0
+            fi
+            echo "Push $attempt failed; rebasing and retrying."
+            if ! git pull --rebase origin "$(git branch --show-current)"; then
+              git rebase --abort || true
+              break
+            fi
+          done
+          echo "::error::The release is published but the tap was not updated. Fix it with: Scripts/fork-cask.sh --from-release $VERSION, then push the cask by hand."
+          exit 1
+
+      - name: Remove the deploy key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/tap_key" "$RUNNER_TEMP/known_hosts"
