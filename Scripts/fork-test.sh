@@ -683,11 +683,252 @@ test_update_path() {
     return 0
 }
 
+# ---- sync scripts: real throwaway git repositories ----
+
+# gitq: git with a fixed identity and no signing, for the repositories these tests build.
+gitq() {
+    git -c user.name=test -c user.email=test@example.invalid -c commit.gpgsign=false -c init.defaultBranch=main "$@"
+}
+
+# make_sync_repo DIR: a repository with a base commit, a `dev` branch and an `up` branch.
+make_sync_repo() {
+    mkdir -p "$1" && cd "$1" || return 1
+    gitq init -q
+    mkdir -p .github/workflows Scripts docs/fork Tinycast website
+    printf 'one\ntwo\nthree\n' > Tinycast/Core.swift
+    echo a > a.txt
+    echo ours > .github/workflows/ours.yml
+    echo up > .github/workflows/up.yml
+    echo script > Scripts/fork-x.sh
+    echo doc > docs/fork/x.md
+    echo site > website/index.md
+    gitq add -A && gitq commit -qm base
+    gitq branch dev && gitq branch up
+    cd - > /dev/null || return 1
+}
+
+# on_branch DIR BRANCH COMMAND...: run a command on a branch and commit what it changes.
+on_branch() {
+    local dir="$1" branch="$2"
+    shift 2
+    (cd "$dir" && gitq checkout -q "$branch" && "$@" && gitq add -A && gitq commit -qm "change on $branch")
+}
+
+test_next_version() {
+    local script="$ROOT/Scripts/fork-next-version.sh" out
+    [ -x "$script" ] || {
+        fail "Scripts/fork-next-version.sh is missing or not executable"
+        return
+    }
+    [ "$("$script" 0.12.12 v0.12.11-fork.4 v0.12.11-fork.5)" = "0.12.12-fork.1" ] || fail "a new base should start at 1"
+    [ "$("$script" 0.12.11 v0.12.11-fork.4 v0.12.11-fork.10 v0.12.11-fork.9)" = "0.12.11-fork.11" ] || fail ".10 must beat .9"
+    [ "$("$script" 0.12.11 v0.12.12-fork.1)" = "0.12.12-fork.2" ] || fail "a higher fork base must win over a lower upstream base"
+    [ "$("$script" 0.12.11)" = "0.12.11-fork.1" ] || fail "no tags should start at 1"
+    [ "$("$script" 0.12.11 v0.11.9-fork.30 v0.12.11-fork.2)" = "0.12.11-fork.3" ] || fail "other bases must be ignored"
+    [ "$("$script" 0.13.0 v0.12.11-fork.2)" = "0.13.0-fork.1" ] || fail "a higher upstream base starts at 1"
+    for bad in "0.12" "v0.12.11" "0.12.11-fork.1" "x.y.z" "" "0.12.11;ls"; do
+        "$script" "$bad" > /dev/null 2>&1 && fail "accepted the base '$bad'"
+    done
+    for bad in "0.12.11-fork.1" "v0.12.11" "v0.12.11-fork" "v0.12.11-fork.x" "v0.12.11-beta.1"; do
+        out="$("$script" 0.12.11 "$bad" 2>&1)" && fail "accepted the tag '$bad': $out"
+    done
+    "$script" > /dev/null 2>&1 && fail "accepted no arguments"
+    return 0
+}
+
+test_sync_merge() {
+    local script="$ROOT/Scripts/fork-sync-merge.sh" d="$WORK/sm" out dev up
+    [ -x "$script" ] || {
+        fail "Scripts/fork-sync-merge.sh is missing or not executable"
+        return
+    }
+    # A clean merge: both sides change different files.
+    make_sync_repo "$d-clean"
+    on_branch "$d-clean" dev bash -c 'echo fork > fork.txt'
+    on_branch "$d-clean" up bash -c 'echo newline >> Tinycast/Core.swift'
+    (cd "$d-clean" && gitq checkout -q dev)
+    out="$(cd "$d-clean" && GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t "$script" dev up)" \
+        || fail "a clean merge failed: $out"
+    [ "$out" = "$(cd "$d-clean" && git rev-parse HEAD)" ] || fail "a clean merge should print the merge commit"
+    [ "$(cd "$d-clean" && git rev-list --parents -n 1 HEAD | wc -w | tr -d ' ')" = 3 ] || fail "the merge must have two parents"
+    if [ ! -f "$d-clean/fork.txt" ] || ! grep -q newline "$d-clean/Tinycast/Core.swift"; then
+        fail "both sides' changes must be in the merge"
+    fi
+    [ -z "$(cd "$d-clean" && git status --porcelain)" ] || fail "the work tree should be clean after a merge"
+
+    # A conflict: both sides change the same line.
+    make_sync_repo "$d-conf"
+    on_branch "$d-conf" dev bash -c "sed -i '' 's/two/fork-two/' Tinycast/Core.swift"
+    on_branch "$d-conf" up bash -c "sed -i '' 's/two/up-two/' Tinycast/Core.swift"
+    (cd "$d-conf" && gitq checkout -q dev)
+    dev="$(cd "$d-conf" && git rev-parse HEAD)"
+    out="$(cd "$d-conf" && "$script" dev up 2>&1)"
+    [ $? -eq 10 ] || fail "a conflict must exit 10"
+    assert_contains "$out" "Tinycast/Core.swift"
+    [ "$(cd "$d-conf" && git rev-parse HEAD)" = "$dev" ] || fail "a conflict must leave dev untouched"
+    [ -z "$(cd "$d-conf" && git status --porcelain)" ] || fail "a conflict must leave a clean work tree"
+    (cd "$d-conf" && git show refs/fork-sync/conflicted:Tinycast/Core.swift) | grep -q '<<<<<<<' \
+        || fail "the conflicted state must be saved with its markers"
+
+    # Workflows are pinned to dev's version: edited, added and conflicting.
+    make_sync_repo "$d-wf"
+    on_branch "$d-wf" dev bash -c 'echo forked > .github/workflows/up.yml; echo fork > fork.txt'
+    on_branch "$d-wf" up bash -c 'echo changed > .github/workflows/up.yml; echo new > .github/workflows/new.yml;
+        echo changed > .github/workflows/ours.yml; echo more >> Tinycast/Core.swift'
+    (cd "$d-wf" && gitq checkout -q dev)
+    dev="$(cd "$d-wf" && git rev-parse HEAD)"
+    out="$(cd "$d-wf" && GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t "$script" dev up 2>&1)" \
+        || fail "a merge with workflow changes failed: $out"
+    [ -z "$(cd "$d-wf" && git diff --name-only "$dev" HEAD -- .github)" ] || fail ".github must equal dev's after the merge"
+    [ ! -e "$d-wf/.github/workflows/new.yml" ] || fail "an upstream workflow must not land"
+    grep -q more "$d-wf/Tinycast/Core.swift" || fail "the rest of upstream must still merge"
+
+    # Already up to date.
+    make_sync_repo "$d-same"
+    out="$(cd "$d-same" && "$script" dev up 2>&1)"
+    [ $? -eq 3 ] || fail "nothing to merge must exit 3"
+    # Bad calls.
+    "$script" > /dev/null 2>&1 && fail "accepted no arguments"
+    make_sync_repo "$d-dirty"
+    on_branch "$d-dirty" dev bash -c 'echo fork > fork.txt'
+    on_branch "$d-dirty" up bash -c 'echo more >> Tinycast/Core.swift'
+    (cd "$d-dirty" && gitq checkout -q dev && echo dirty > a.txt && "$script" dev up > /dev/null 2>&1)
+    [ $? -eq 2 ] || fail "must refuse, with exit 2, to merge into a dirty work tree"
+    [ "$(cd "$d-dirty" && git rev-parse HEAD)" = "$(cd "$d-dirty" && git rev-parse dev)" ] || fail "a refused merge must not move dev"
+    return 0
+}
+
+# forge DIR CANDIDATE DEV UP COMMAND...: a new commit with the candidate's tree plus a change.
+forge() {
+    local dir="$1" cand="$2" dev="$3" up="$4"
+    shift 4
+    (cd "$dir" && gitq reset -q --hard && gitq clean -fdq && gitq checkout -q --detach "$cand" && "$@" && gitq add -A \
+        && sha="$(gitq commit-tree -p "$dev" -p "$up" -m forged "$(gitq write-tree)")" \
+        && gitq reset -q --hard && gitq clean -fdq && echo "$sha")
+}
+
+test_sync_verify_tree() {
+    local script="$ROOT/Scripts/fork-sync-verify-tree.sh" d="$WORK/vt" dev up cand bad base
+    [ -x "$script" ] || {
+        fail "Scripts/fork-sync-verify-tree.sh is missing or not executable"
+        return
+    }
+    expect_ok() { (cd "$d" && "$script" "$dev" "$up" "$1" > /dev/null 2>&1) || fail "refused: $2"; }
+    expect_bad() { (cd "$d" && "$script" "$dev" "$up" "$1" > /dev/null 2>&1) && fail "accepted: $2"; return 0; }
+
+    make_sync_repo "$d"
+    on_branch "$d" dev bash -c 'echo fork > fork.txt'
+    on_branch "$d" up bash -c 'echo newline >> Tinycast/Core.swift; echo changed > .github/workflows/up.yml'
+    dev="$(cd "$d" && git rev-parse dev)"
+    up="$(cd "$d" && git rev-parse up)"
+    # The genuine result of the merge script.
+    (cd "$d" && gitq checkout -q dev && GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
+        "$ROOT/Scripts/fork-sync-merge.sh" dev up > /dev/null) || fail "setup: the merge failed"
+    cand="$(cd "$d" && git rev-parse HEAD)"
+    expect_ok "$cand" "the genuine clean merge"
+
+    bad="$(forge "$d" "$cand" "$dev" "$up" bash -c 'echo evil >> a.txt')"
+    expect_bad "$bad" "a change to a file that merged cleanly"
+    bad="$(forge "$d" "$cand" "$dev" "$up" bash -c 'echo evil > .github/workflows/ours.yml')"
+    expect_bad "$bad" "a change under .github"
+    bad="$(forge "$d" "$cand" "$dev" "$up" bash -c 'echo evil > Scripts/fork-x.sh')"
+    expect_bad "$bad" "an edit to a fork script"
+    bad="$(forge "$d" "$cand" "$dev" "$up" bash -c 'echo evil > docs/fork/x.md')"
+    expect_bad "$bad" "an edit to the fork docs"
+    bad="$(forge "$d" "$cand" "$dev" "$up" bash -c 'printf "<<<<<<< HEAD\n" >> Tinycast/Core.swift')"
+    expect_bad "$bad" "a leftover conflict marker"
+    bad="$(cd "$d" && gitq commit-tree -p "$up" -p "$dev" -m swapped "$cand^{tree}")"
+    expect_bad "$bad" "swapped parents"
+    bad="$(cd "$d" && gitq commit-tree -p "$(git merge-base "$dev" "$up")" -p "$up" -m wrongfirst "$cand^{tree}")"
+    expect_bad "$bad" "the wrong first parent"
+    base="$(cd "$d" && git merge-base "$dev" "$up")"
+    bad="$(cd "$d" && gitq commit-tree -p "$dev" -p "$up" -p "$base" -m three "$cand^{tree}")"
+    expect_bad "$bad" "three parents"
+    bad="$(cd "$d" && gitq commit-tree -p "$dev" -m one "$cand^{tree}")"
+    expect_bad "$bad" "a single parent"
+    bad="$(cd "$d" && gitq commit-tree -p "$dev" -p "$base" -m other "$cand^{tree}")"
+    expect_bad "$bad" "the wrong second parent"
+    (cd "$d" && "$script" > /dev/null 2>&1) && fail "accepted no arguments"
+
+    # A conflict, resolved by changing only the conflicted file.
+    make_sync_repo "$d-c"
+    on_branch "$d-c" dev bash -c "sed -i '' 's/two/fork-two/' Tinycast/Core.swift"
+    on_branch "$d-c" up bash -c "sed -i '' 's/two/up-two/' Tinycast/Core.swift; echo more > upstream.txt"
+    dev="$(cd "$d-c" && git rev-parse dev)"
+    up="$(cd "$d-c" && git rev-parse up)"
+    (cd "$d-c" && gitq checkout -q dev && "$ROOT/Scripts/fork-sync-merge.sh" dev up > /dev/null 2>&1)
+    cand="$(cd "$d-c" && git rev-parse refs/fork-sync/conflicted)"
+    d="$d-c"
+    bad="$(forge "$d" "$cand" "$dev" "$up" bash -c "printf 'one\nfork-up-two\nthree\n' > Tinycast/Core.swift")"
+    expect_ok "$bad" "a resolution that changes only the conflicted file"
+    bad="$(forge "$d" "$cand" "$dev" "$up" bash -c "printf 'one\nfork-up-two\nthree\n' > Tinycast/Core.swift; echo evil >> a.txt")"
+    expect_bad "$bad" "a resolution that also changes another file"
+    expect_bad "$cand" "the conflicted state with its markers still in"
+    bad="$(forge "$d" "$cand" "$dev" "$up" bash -c "printf 'one\nx\nthree\n' > Tinycast/Core.swift; rm upstream.txt")"
+    expect_bad "$bad" "a resolution that drops a file upstream added"
+
+    # A conflict in one of the fork's own files may not be resolved by the sync at all.
+    local path fx
+    for path in Scripts/fork-y.sh docs/fork/y.md; do
+        fx="$WORK/vt-fx-${path//\//_}"
+        make_sync_repo "$fx"
+        on_branch "$fx" dev bash -c "mkdir -p \"\$(dirname $path)\" && echo dev > $path"
+        on_branch "$fx" up bash -c "mkdir -p \"\$(dirname $path)\" && echo up > $path"
+        dev="$(cd "$fx" && git rev-parse dev)"
+        up="$(cd "$fx" && git rev-parse up)"
+        (cd "$fx" && gitq checkout -q dev && "$ROOT/Scripts/fork-sync-merge.sh" dev up > /dev/null 2>&1)
+        cand="$(cd "$fx" && git rev-parse refs/fork-sync/conflicted)" || {
+            fail "setup: no conflicted ref for $path"
+            continue
+        }
+        bad="$(forge "$fx" "$cand" "$dev" "$up" bash -c "echo resolved > $path")"
+        (cd "$fx" && "$script" "$dev" "$up" "$bad" > /dev/null 2>&1) && fail "accepted: a resolution of a conflict in $path"
+    done
+    return 0
+}
+
+test_sync_decide() {
+    local script="$ROOT/Scripts/fork-sync-decide.sh" d="$WORK/sd"
+    [ -x "$script" ] || {
+        fail "Scripts/fork-sync-decide.sh is missing or not executable"
+        return
+    }
+    decide() { (cd "$d" && "$script" last dev 2> /dev/null); }
+    make_sync_repo "$d"
+    (cd "$d" && gitq checkout -q dev && gitq tag last)
+    [ "$(decide)" = skip ] || fail "no new commits should be skip"
+    on_branch "$d" dev bash -c 'echo x >> docs/fork/x.md; echo y >> website/index.md; mkdir -p docs && echo z > docs/new.md'
+    [ "$(decide)" = skip ] || fail "docs and website only should be skip"
+    on_branch "$d" dev bash -c 'echo x >> Tinycast/Core.swift'
+    [ "$(decide)" = release ] || fail "an app change should be release"
+    (cd "$d" && gitq commit --allow-empty -qm "Merge" -m "Resolved-by: claude")
+    [ "$(decide)" = hold ] || fail "a Claude-resolved merge should be hold"
+    # A look-alike directory counts as code.
+    make_sync_repo "$d-2"
+    (cd "$d-2" && gitq checkout -q dev && gitq tag last)
+    on_branch "$d-2" dev bash -c 'mkdir -p docs-evil && echo x > docs-evil/x'
+    (cd "$d-2" && [ "$("$script" last dev)" = release ]) || fail "docs-evil/ must count as code"
+    make_sync_repo "$d-3"
+    (cd "$d-3" && gitq checkout -q dev && gitq tag last)
+    on_branch "$d-3" dev bash -c 'mkdir -p website2 && echo x > website2/x'
+    (cd "$d-3" && [ "$("$script" last dev)" = release ]) || fail "website2/ must count as code"
+    # A path with a newline in it, and a docs/.. trick, count as code.
+    make_sync_repo "$d-4"
+    (cd "$d-4" && gitq checkout -q dev && gitq tag last)
+    on_branch "$d-4" dev bash -c "printf x > \$'docs/a\nb'"
+    (cd "$d-4" && [ "$("$script" last dev)" != skip ]) || fail "a docs path with a newline must not hide a change"
+    # A missing tag is an error, never a silent skip.
+    (cd "$d" && "$script" nosuchtag dev > /dev/null 2>&1) && fail "accepted a missing tag"
+    "$script" > /dev/null 2>&1 && fail "accepted no arguments"
+    return 0
+}
+
 ALL=(validate_accepts validate_rejects build_print_settings import_requires_env import_cleanup_is_safe
     package_ok package_rejects package_authority package_relative_paths notes_licence_items notes_rejects cask_contents cask_rejects cask_from_release cask_style
     bootstrap_dry_run bootstrap_environments_calls bootstrap_identity_calls bootstrap_tap_calls
     bootstrap_refuses_overwrite bootstrap_no_leftovers bootstrap_rejects_bad_args
-    workflow_static update_path)
+    workflow_static update_path
+    next_version sync_merge sync_verify_tree sync_decide)
 
 if [ $# -gt 0 ]; then
     names=("$@")
