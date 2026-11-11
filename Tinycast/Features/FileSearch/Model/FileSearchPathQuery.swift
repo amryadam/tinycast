@@ -36,6 +36,14 @@ enum FileSearchPathQuery {
         return nil
     }
 
+    // The pasted row leads and survives the cut, so a full list never drops it.
+    static func leading(
+        _ pasted: FileSearchResult?, before found: [FileSearchResult], limit: Int
+    ) -> [FileSearchResult] {
+        guard let pasted else { return found }
+        return Array(([pasted] + found.filter { $0.id != pasted.id }).prefix(limit))
+    }
+
     // MARK: - Spelling
 
     private static func spelling(of query: String, home: String) -> String? {
@@ -45,9 +53,10 @@ enum FileSearchPathQuery {
         if text.lowercased().hasPrefix("file:") {
             guard let url = URL(string: text), url.isFileURL, isThisMachine(url.host) else { return nil }
             text = url.path
+        } else if text == "~" || text.hasPrefix("~/") {
+            text = home + unescaped(String(text.dropFirst()))
         } else {
             text = unescaped(text)
-            if text == "~" || text.hasPrefix("~/") { text = home + text.dropFirst() }
         }
         guard text.hasPrefix("/") else { return nil }
         return normalized(text)

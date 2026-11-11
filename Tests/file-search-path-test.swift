@@ -31,6 +31,7 @@ struct FileSearchPathTests {
         positions()
         existence()
         lookup()
+        leading()
 
         print(failures == 0 ? "File search path tests passed" : "\(failures) file search path tests failed")
         exit(failures == 0 ? 0 : 1)
@@ -58,6 +59,10 @@ struct FileSearchPathTests {
         let files = ["/Users/test/a.txt", "/Users/test/My Folder/", "/Users/test/My Folder/x.txt"]
         expect(resolve("~/a.txt", existing: files)?.path == "/Users/test/a.txt", "~/ expands to home")
         expect(resolve("~a.txt", existing: files) == nil, "~name is not the home folder")
+        expect(resolve("\\~/a.txt", existing: files) == nil, "an escaped tilde is not the home folder")
+        expect(
+            resolve("~/My\\ Folder/x.txt", existing: files)?.path == "/Users/test/My Folder/x.txt",
+            "an escaped space after ~/ is unescaped")
         expect(
             resolve("  /Users/test/a.txt \n", existing: files)?.path == "/Users/test/a.txt",
             "whitespace is trimmed")
@@ -152,6 +157,34 @@ struct FileSearchPathTests {
         expect(
             resolve("/Users/test/a.swift:99999999999999999999", existing: files) == nil,
             "an overflowing number is not a position")
+    }
+
+    static func row(_ name: String) -> FileSearchResult {
+        FileSearchResult(
+            url: URL(filePath: "/Users/test/\(name)"), isDirectory: false,
+            homeDirectory: URL(filePath: home))
+    }
+
+    static func leading() {
+        let (a, b, c, d, e, pasted) = (row("a"), row("b"), row("c"), row("d"), row("e"), row("p"))
+        expect(
+            FileSearchPathQuery.leading(nil, before: [a, b], limit: 5) == [a, b],
+            "no pasted row leaves the list")
+        expect(
+            FileSearchPathQuery.leading(pasted, before: [a, b], limit: 5) == [pasted, a, b],
+            "the pasted row leads")
+        expect(
+            FileSearchPathQuery.leading(pasted, before: [], limit: 5) == [pasted],
+            "an empty list still shows it")
+        expect(
+            FileSearchPathQuery.leading(a, before: [b, a], limit: 5) == [a, b], "a repeated path appears once"
+        )
+        expect(
+            FileSearchPathQuery.leading(pasted, before: [a, b, c, d, e], limit: 5) == [pasted, a, b, c, d],
+            "the cut keeps the pasted row and drops the tail")
+        expect(
+            FileSearchPathQuery.leading(pasted, before: [a, b], limit: 1) == [pasted],
+            "a limit of one keeps it")
     }
 
     static func existence() {

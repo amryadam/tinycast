@@ -1,9 +1,13 @@
 import Foundation
 
-// One render builds the launcher screen about 14 times, so the lookup runs once per query.
 @MainActor
 private enum PastedPathMemo {
-    static var memo = Memo<String, FileSearchResult?>()
+    struct Key: Equatable {
+        let query: String
+        let second: Int
+    }
+
+    static var memo = Memo<Key, FileSearchResult?>()
 }
 
 extension FileSearchCoordinator {
@@ -11,10 +15,13 @@ extension FileSearchCoordinator {
     func launcherFilesLeadingWithPastedPath(for query: String) -> [FileSearchResult] {
         let found = launcherFiles(for: query)
         guard showsFilesInLauncher else { return found }
-        let pasted = PastedPathMemo.memo.value(for: query) {
+        // One render builds the screen about 14 times; the second keeps a late file from staying unseen.
+        let key = PastedPathMemo.Key(query: query, second: Int(Date.now.timeIntervalSince1970))
+        let cached = PastedPathMemo.memo.value(for: key) {
             FileSearchPathLookup.result(for: query, isAllowed: Permissions.hasFullDiskAccess)
         }
-        guard let pasted else { return found }
-        return Array(([pasted] + found.filter { $0.id != pasted.id }).prefix(FileSearchQuery.launcherLimit))
+        // Trashing re-renders inside the same second, so a cached row is checked once more.
+        let pasted = cached.flatMap { FileManager.default.fileExists(atPath: $0.id) ? $0 : nil }
+        return FileSearchPathQuery.leading(pasted, before: found, limit: FileSearchQuery.launcherLimit)
     }
 }
