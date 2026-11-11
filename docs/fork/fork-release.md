@@ -11,7 +11,9 @@ The fork's rules are in [README.md](README.md).
 
 ## Status
 
-Spec and plan written. No code yet.
+Spec and plan written, and Task 1 (version validation and the build's version settings) is done.
+`Scripts/fork-build.sh` is listed in [fork-identity.md](fork-identity.md); this feature adds `FORK_VERSION`, `FORK_BUILD_NUMBER` and `--print-settings` to it.
+Run the tests with `./Scripts/fork-test.sh`.
 Nothing is published, and no secret is uploaded.
 
 ## Files
@@ -21,3 +23,5 @@ Nothing is published, and no secret is uploaded.
 | `docs/fork/fork-release.md` | New | This file. | None |
 | `docs/fork/fork-release-spec.md` | New | The spec. | None |
 | `docs/fork/fork-release-plan.md` | New | The plan. | None |
+| `Scripts/fork-test.sh` | New | Runs the tests of every release script, with no network or identity. | None |
+| `Scripts/fork-release-validate.sh` | New | Accepts only `MAJOR.MINOR.PATCH-fork.N` and prints the base version. | None |
