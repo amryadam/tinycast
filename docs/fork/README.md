@@ -61,3 +61,4 @@ grep -rn 'FORK(' Tinycast Tests Scripts
 | Date | Upstream commit | Result |
 |---|---|---|
 | 2026-11-11 | `58168bf7` | Fork created from this commit. No conflicts. |
+| 2026-11-11 | `58168bf7` | First release `v0.12.11-fork.1` built from `dev` at this base. No upstream changes merged. |

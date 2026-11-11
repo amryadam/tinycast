@@ -73,7 +73,7 @@ done
 # gh_write ARGS...: runs gh, or only says so on a dry run. Standard input passes through.
 gh_write() {
     if [ "$DRY" -eq 1 ]; then
-        echo "dry run: would run: gh $*"
+        echo "dry run: would run: gh $*" >&2
     else
         gh "$@"
     fi
@@ -110,14 +110,14 @@ do_environments() {
     local env policies
     for env in fork-build fork-publish; do
         gh_write api -X PUT "repos/$REPO/environments/$env" --input - \
-            <<< '{"deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true}}'
+            <<< '{"deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true}}' > /dev/null
         policies="$(gh api "repos/$REPO/environments/$env/deployment-branch-policies" \
             --jq '.branch_policies[].name' 2> /dev/null || true)"
         if grep -qxF dev <<< "$policies"; then
             echo "✓ $env already allows the branch dev"
         else
             gh_write api -X POST "repos/$REPO/environments/$env/deployment-branch-policies" --input - \
-                <<< '{"name":"dev","type":"branch"}'
+                <<< '{"name":"dev","type":"branch"}' > /dev/null
         fi
     done
     echo "✓ Environments fork-build and fork-publish are limited to the branch dev in $REPO."
