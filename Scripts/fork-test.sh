@@ -306,8 +306,181 @@ test_cask_style() {
         || fail "brew style failed: $(head -20 "$WORK/cask-style/out")"
 }
 
+# bootstrap_env NAME: a fresh area with a stub gh first on PATH. The stub records every call in
+# calls.log, saves what it is given on standard input, and answers reads from STUB_* variables.
+bootstrap_env() {
+    BS="$WORK/bs-$1"
+    mkdir -p "$BS/bin" "$BS/tmp"
+    : > "$BS/calls.log"
+    cat > "$BS/bin/gh" <<'STUB'
+#!/bin/bash
+echo "$*" >> "$STUB_DIR/calls.log"
+case "$1 $2" in
+    "secret set") cat > "$STUB_DIR/stdin-$3" ;;
+    "secret list") for n in ${STUB_EXISTING_SECRETS:-}; do echo "$n"; done ;;
+    "repo view") [ "${STUB_REPO_EXISTS:-0}" = 1 ] || exit 1 ;;
+    "repo deploy-key")
+        for a in "$@"; do [ -f "$a" ] && cp "$a" "$STUB_DIR/deploy-pub"; done
+        ;;
+    "api "*)
+        case "$*" in
+            *--input*) cat > "$STUB_DIR/api-stdin-$(wc -l < "$STUB_DIR/calls.log" | tr -d ' ')" ;;
+            *-X*) ;;
+            *deployment-branch-policies*) for n in ${STUB_POLICIES:-}; do echo "$n"; done ;;
+        esac
+        ;;
+esac
+exit 0
+STUB
+    chmod +x "$BS/bin/gh"
+}
+
+# run_bootstrap ARGS...: runs the script with the stub, in the area made by bootstrap_env.
+run_bootstrap() {
+    STUB_DIR="$BS" PATH="$BS/bin:$PATH" TMPDIR="$BS/tmp" "$ROOT/Scripts/fork-bootstrap.sh" "$@" 2>&1 < /dev/null
+}
+
+# bootstrap_writes: the stub calls that would change GitHub.
+bootstrap_writes() {
+    grep -E '^(secret set|repo create|repo deploy-key (add|delete)|api .*(-X|--method))' "$BS/calls.log" || true
+}
+
+require_bootstrap() {
+    [ -x "$ROOT/Scripts/fork-bootstrap.sh" ] || {
+        fail "Scripts/fork-bootstrap.sh is missing or not executable"
+        return 1
+    }
+}
+
+test_bootstrap_dry_run() {
+    require_bootstrap || return 0
+    local sub out
+    for sub in environments tap identity; do
+        bootstrap_env "dry-$sub"
+        out="$(run_bootstrap "$sub" --dry-run)" || fail "$sub --dry-run failed: $out"
+        assert_contains "$out" "dry run"
+        assert_lacks "$out" "BEGIN"
+        assert_lacks "$out" "PRIVATE"
+        [ -z "$(bootstrap_writes)" ] || fail "$sub --dry-run changed GitHub: $(bootstrap_writes)"
+        [ -z "$(ls -A "$BS/tmp")" ] || fail "$sub --dry-run left files in the temporary folder"
+    done
+}
+
+test_bootstrap_environments_calls() {
+    require_bootstrap || return 0
+    local out env
+    bootstrap_env env
+    out="$(run_bootstrap environments)" || fail "environments failed: $out"
+    for env in fork-build fork-publish; do
+        grep -q "environments/$env" "$BS/calls.log" || fail "no call for $env"
+    done
+    grep -q 'deployment-branch-policies' "$BS/calls.log" || fail "no branch policy created"
+    assert_contains "$(cat "$BS"/api-stdin-* 2>/dev/null)" '"name":"dev"'
+    # With dev already allowed, no second policy is created.
+    bootstrap_env env2
+    STUB_POLICIES="dev" run_bootstrap environments > /dev/null || fail "environments failed on a rerun"
+    grep -q 'POST.*deployment-branch-policies' "$BS/calls.log" && fail "created a policy that exists"
+    return 0
+}
+
+test_bootstrap_identity_calls() {
+    require_bootstrap || return 0
+    local out pass
+    bootstrap_env id
+    out="$(run_bootstrap identity)" || {
+        fail "identity failed: $out"
+        return
+    }
+    assert_contains "$(cat "$BS/calls.log")" "secret set SIGNING_P12_BASE64 --env fork-build"
+    assert_contains "$(cat "$BS/calls.log")" "secret set SIGNING_P12_PASSWORD --env fork-build"
+    [ -s "$BS/stdin-SIGNING_P12_BASE64" ] || fail "the identity was not sent on standard input"
+    [ -s "$BS/stdin-SIGNING_P12_PASSWORD" ] || fail "the password was not sent on standard input"
+    pass="$(cat "$BS/stdin-SIGNING_P12_PASSWORD")"
+    # The secrets never appear in an argument or in the output.
+    assert_lacks "$(cat "$BS/calls.log")" "$pass"
+    assert_lacks "$(cat "$BS/calls.log")" "$(head -c 40 "$BS/stdin-SIGNING_P12_BASE64")"
+    assert_lacks "$out" "$pass"
+    assert_lacks "$out" "BEGIN"
+    # What was uploaded is a real identity: it opens with the uploaded password and is named right.
+    base64 -D < "$BS/stdin-SIGNING_P12_BASE64" > "$BS/id.p12" 2> /dev/null || fail "the upload is not base64"
+    /usr/bin/openssl pkcs12 -in "$BS/id.p12" -passin "pass:$pass" -nodes 2> /dev/null \
+        | /usr/bin/openssl x509 -noout -subject 2> /dev/null | grep -q "Tinycast Self-Signed" \
+        || fail "the uploaded identity does not open, or is not named Tinycast Self-Signed"
+}
+
+test_bootstrap_tap_calls() {
+    require_bootstrap || return 0
+    local out
+    bootstrap_env tap
+    out="$(run_bootstrap tap)" || {
+        fail "tap failed: $out"
+        return
+    }
+    assert_contains "$(cat "$BS/calls.log")" "repo create amryadam/homebrew-fork --public"
+    assert_contains "$(cat "$BS/calls.log")" "--allow-write"
+    assert_contains "$(cat "$BS/calls.log")" "secret set TAP_DEPLOY_KEY --env fork-publish"
+    assert_contains "$(cat "$BS/deploy-pub")" "ssh-ed25519"
+    assert_contains "$(cat "$BS/stdin-TAP_DEPLOY_KEY")" "BEGIN OPENSSH PRIVATE KEY"
+    assert_lacks "$(cat "$BS/calls.log")" "PRIVATE KEY"
+    assert_lacks "$out" "PRIVATE KEY"
+    # An existing tap repository is kept, not created again.
+    bootstrap_env tap2
+    STUB_REPO_EXISTS=1 run_bootstrap tap > /dev/null || fail "tap failed when the repository exists"
+    grep -q '^repo create' "$BS/calls.log" && fail "created a repository that exists"
+    return 0
+}
+
+test_bootstrap_refuses_overwrite() {
+    require_bootstrap || return 0
+    local out
+    bootstrap_env ow
+    out="$(STUB_EXISTING_SECRETS="SIGNING_P12_BASE64 SIGNING_P12_PASSWORD" run_bootstrap identity)" \
+        && fail "replaced an existing identity without --force"
+    assert_contains "$out" "--force"
+    [ -z "$(bootstrap_writes)" ] || fail "changed GitHub while refusing: $(bootstrap_writes)"
+    bootstrap_env ow2
+    STUB_EXISTING_SECRETS="SIGNING_P12_BASE64 SIGNING_P12_PASSWORD" run_bootstrap identity --force > /dev/null \
+        || fail "--force did not let identity proceed"
+    grep -q '^secret set SIGNING_P12_BASE64' "$BS/calls.log" || fail "--force did not set the identity"
+    bootstrap_env ow3
+    STUB_EXISTING_SECRETS="TAP_DEPLOY_KEY" run_bootstrap tap > /dev/null \
+        && fail "replaced an existing deploy key without --force"
+    [ -z "$(bootstrap_writes)" ] || fail "tap changed GitHub while refusing: $(bootstrap_writes)"
+    return 0
+}
+
+test_bootstrap_no_leftovers() {
+    require_bootstrap || return 0
+    local sub
+    for sub in identity tap; do
+        bootstrap_env "left-$sub"
+        run_bootstrap "$sub" > /dev/null || fail "$sub failed"
+        [ -z "$(ls -A "$BS/tmp")" ] || fail "$sub left files behind: $(ls -A "$BS/tmp")"
+    done
+    # A failed upload must not leave key material either.
+    bootstrap_env left-fail
+    sed -i '' 's|^    "secret set") cat|    "secret set") exit 1; cat|' "$BS/bin/gh"
+    run_bootstrap identity > /dev/null 2>&1 && fail "identity ignored a failed upload"
+    [ -z "$(ls -A "$BS/tmp")" ] || fail "a failed upload left files behind: $(ls -A "$BS/tmp")"
+    return 0
+}
+
+test_bootstrap_rejects_bad_args() {
+    require_bootstrap || return 0
+    bootstrap_env args
+    run_bootstrap > /dev/null && fail "ran without a subcommand"
+    run_bootstrap nonsense > /dev/null && fail "accepted an unknown subcommand"
+    run_bootstrap identity --repo 'x/y;rm -rf ~' > /dev/null && fail "accepted a malformed --repo"
+    run_bootstrap tap --tap 'no-slash' > /dev/null && fail "accepted a malformed --tap"
+    run_bootstrap identity --bogus > /dev/null && fail "accepted an unknown option"
+    [ -z "$(bootstrap_writes)" ] || fail "bad arguments changed GitHub: $(bootstrap_writes)"
+    return 0
+}
+
 ALL=(validate_accepts validate_rejects build_print_settings import_requires_env import_cleanup_is_safe
-    package_ok package_rejects package_authority notes_licence_items notes_rejects cask_contents cask_rejects cask_from_release cask_style)
+    package_ok package_rejects package_authority notes_licence_items notes_rejects cask_contents cask_rejects cask_from_release cask_style
+    bootstrap_dry_run bootstrap_environments_calls bootstrap_identity_calls bootstrap_tap_calls
+    bootstrap_refuses_overwrite bootstrap_no_leftovers bootstrap_rejects_bad_args)
 
 if [ $# -gt 0 ]; then
     names=("$@")
