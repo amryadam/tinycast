@@ -221,8 +221,93 @@ test_notes_rejects() {
     return 0
 }
 
+SHA64=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+
+test_cask_contents() {
+    local out
+    [ -x "$ROOT/Scripts/fork-cask.sh" ] || {
+        fail "Scripts/fork-cask.sh is missing or not executable"
+        return
+    }
+    "$ROOT/Scripts/fork-cask.sh" 0.12.11-fork.1 "$SHA64" "$WORK/cask/Casks/tinycast-fork.rb" \
+        || fail "the cask script failed"
+    out="$(cat "$WORK/cask/Casks/tinycast-fork.rb")"
+    for needle in 'cask "tinycast-fork" do' 'version "0.12.11-fork.1"' "sha256 \"$SHA64\"" \
+        'url "https://github.com/amryadam/tinycast/releases/download/v#{version}/Tinycast-Fork-#{version}.zip"' \
+        'name "Tinycast Fork"' 'desc "Unofficial fork' 'homepage "https://github.com/amryadam/tinycast"' \
+        'livecheck do' 'strategy :github_latest' '-fork' 'depends_on macos: :tahoe' \
+        'depends_on arch: :arm64' 'app "Tinycast Fork.app"' 'uninstall quit: "com.amryadam.tinycast"' \
+        'com.amryadam.tinycast.dictation'; do
+        assert_contains "$out" "$needle"
+    done
+    assert_lacks "$out" "ClipboardTextHelper"
+}
+
+test_cask_rejects() {
+    [ -x "$ROOT/Scripts/fork-cask.sh" ] || {
+        fail "Scripts/fork-cask.sh is missing or not executable"
+        return
+    }
+    local bad out="$WORK/cask-rej/x.rb"
+    for bad in "abc" "${SHA64}0" "${SHA64%a}" "${SHA64%a}G" "$(echo "$SHA64" | tr a A)" ""; do
+        "$ROOT/Scripts/fork-cask.sh" 0.12.11-fork.1 "$bad" "$out" > /dev/null 2>&1 \
+            && fail "accepted checksum '$bad'"
+    done
+    "$ROOT/Scripts/fork-cask.sh" 0.12.11 "$SHA64" "$out" > /dev/null 2>&1 \
+        && fail "accepted a version without -fork.N"
+    "$ROOT/Scripts/fork-cask.sh" > /dev/null 2>&1 && fail "accepted no arguments"
+    [ -e "$out" ] && fail "wrote a cask after a rejection"
+    return 0
+}
+
+test_cask_from_release() {
+    local out="$WORK/cask-fr/tinycast-fork.rb" stub="$WORK/cask-fr/bin"
+    [ -x "$ROOT/Scripts/fork-cask.sh" ] || {
+        fail "Scripts/fork-cask.sh is missing or not executable"
+        return
+    }
+    mkdir -p "$stub"
+    cat > "$stub/gh" <<STUB
+#!/bin/bash
+# Stub: records its arguments and prints a checksum file, as gh release download --output - would.
+echo "\$*" > "$WORK/cask-fr/gh-args"
+echo "$SHA64  Tinycast-Fork-0.12.11-fork.1.zip"
+STUB
+    chmod +x "$stub/gh"
+    PATH="$stub:$PATH" "$ROOT/Scripts/fork-cask.sh" --from-release 0.12.11-fork.1 "$out" \
+        || fail "--from-release failed"
+    assert_contains "$(cat "$out")" "sha256 \"$SHA64\""
+    assert_contains "$(cat "$WORK/cask-fr/gh-args")" "v0.12.11-fork.1"
+    # A release whose checksum file is garbage must not produce a cask.
+    cat > "$stub/gh" <<'STUB'
+#!/bin/bash
+echo "not a checksum"
+STUB
+    rm -f "$out"
+    PATH="$stub:$PATH" "$ROOT/Scripts/fork-cask.sh" --from-release 0.12.11-fork.1 "$out" > /dev/null 2>&1 \
+        && fail "--from-release accepted a garbage checksum file"
+    [ -e "$out" ] && fail "--from-release wrote a cask from a garbage checksum file"
+    return 0
+}
+
+test_cask_style() {
+    local dir="$WORK/cask-style/Casks"
+    command -v brew > /dev/null || {
+        echo "  (skipped: brew is not installed)"
+        return
+    }
+    [ -x "$ROOT/Scripts/fork-cask.sh" ] || {
+        fail "Scripts/fork-cask.sh is missing or not executable"
+        return
+    }
+    "$ROOT/Scripts/fork-cask.sh" 0.12.11-fork.1 "$SHA64" "$dir/tinycast-fork.rb" > /dev/null \
+        || fail "the cask script failed"
+    brew style "$dir/tinycast-fork.rb" > "$WORK/cask-style/out" 2>&1 \
+        || fail "brew style failed: $(head -20 "$WORK/cask-style/out")"
+}
+
 ALL=(validate_accepts validate_rejects build_print_settings import_requires_env import_cleanup_is_safe
-    package_ok package_rejects package_authority notes_licence_items notes_rejects)
+    package_ok package_rejects package_authority notes_licence_items notes_rejects cask_contents cask_rejects cask_from_release cask_style)
 
 if [ $# -gt 0 ]; then
     names=("$@")
