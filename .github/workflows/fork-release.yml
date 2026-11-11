@@ -149,7 +149,6 @@ jobs:
       contents: write
     env:
       VERSION: ${{ inputs.version }}
-      GH_TOKEN: ${{ github.token }}
     steps:
       # actions/checkout v7.0.1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -182,6 +181,7 @@ jobs:
       # nothing is public yet.
       - name: Prepare the tap
         env:
+          GH_TOKEN: ${{ github.token }}
           TAP_DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }}
           OWNER: ${{ github.repository_owner }}
         run: |
@@ -203,6 +203,7 @@ jobs:
       # Safe to re-run: a release that already carries the same checksum is kept.
       - name: Create the release
         env:
+          GH_TOKEN: ${{ github.token }}
           EXPECTED_SHA256: ${{ needs.build.outputs.sha256 }}
         run: |
           if gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then

@@ -284,7 +284,7 @@ test_cask_contents() {
         'name "Tinycast Fork"' 'desc "Unofficial fork' 'homepage "https://github.com/amryadam/tinycast"' \
         'livecheck do' 'strategy :github_latest' '-fork' 'depends_on macos: :tahoe' \
         'depends_on arch: :arm64' 'app "Tinycast Fork.app"' 'uninstall quit: "com.amryadam.tinycast"' \
-        'com.amryadam.tinycast.dictation'; do
+        'com.amryadam.tinycast.dictation' 'CrashReporter/Tinycast Fork_*.plist'; do
         assert_contains "$out" "$needle"
     done
     assert_lacks "$out" "ClipboardTextHelper"
