@@ -10,7 +10,7 @@ Each stage is a small shell script with tests, and the workflows only call them.
 
 **Tech Stack:** Swift 6 (the updater), Bash, GitHub Actions, `gh`, `anthropics/claude-code-action`.
 
-Revision 2, written without a separate spec at the user's request, after an independent Opus review at high effort.
+Revision 3, written without a separate spec at the user's request. Revision 2 followed an independent Opus review at high effort, and revision 3 followed a second one of the implementation (decisions 10, 13 and 14, the leading-zero and modify/delete fixes, slower release polling and issue titles matched only when the workflow's own bot opened them).
 
 ## Contents
 
@@ -35,7 +35,9 @@ Revision 2, written without a separate spec at the user's request, after an inde
 | 7 | Any failure opens one issue (or comments on the open one). `dev` never holds a half-merge. | The user finds out, once. |
 | 8 | Secrets are split by job: `fork-sync-claude` holds only the Claude token, and `fork-sync` holds the GitHub token. The job that runs merged code holds no secret, and the job that holds the token runs no repository code. | Merged code is third-party code, and the Claude job reads untrusted text. |
 | 9 | `.github/` is pinned to the `dev` version on every merge. Upstream workflows never land. | Any workflow file on `dev` could name the `fork-build` environment and read the signing key. |
-| 10 | `main` is updated with GitHub's own sync-fork API, not by a push. | That needs no `workflows` permission, so the token is only Contents write on this repo. |
+| 10 | The fork's `main` is not updated by the sync at all. Upstream is fetched directly as `upstream/main` wherever the gate, the notes or the notice need it. `SYNC_TOKEN` has Contents and Workflows write, and rulesets protect `dev` and the `v*-fork.*` tags. | Mirroring `main` would copy upstream's workflow files onto a branch where they are active, and a new upstream workflow could then push to `dev` and start a release with the signing key. |
+| 13 | `Fork release` runs the checks and Swift tests in a `gate` job with no secret. The signing job first runs `fork-check-build-inputs.sh`, which refuses a script build phase, a package reference, a scheme action and a case-colliding path. | The signing job otherwise compiled and ran upstream code beside the key, and a path such as `scripts/fork-build.sh` replaced a fork script on a case-insensitive disk. |
+| 14 | The Claude job runs with `--permission-mode acceptEdits` and `--strict-mcp-config`, with upstream's tool configuration moved out of the tree. A workflow step stages only the paths git reported as conflicted, with hooks and fsmonitor off and `.git/config` restored, and writes the `Resolved-by: claude` trailer. | An edit tool listed as allowed is still denied in agent mode, so no conflict could be resolved. The model must not be able to load upstream's configuration, run a git hook, or drop the trailer that holds back the release. |
 | 11 | A new release must satisfy the previous release's designated requirement before it is published. | A regenerated signing identity would otherwise lock every installed copy out of updates. |
 | 12 | The daily schedule starts only when the repository variable `FORK_SYNC_SCHEDULE` is `on`. | It is switched on after the first manual run and the user's check of the pill. |
 
@@ -199,7 +201,7 @@ extension ReleaseFeed { static func releasesURL(for channel: ReleaseChannel) -> 
 | `merge` | macOS | none | Install `xcodegen`, run `fork-sync-merge.sh`, and upload a git bundle of the merge commit, or of the conflicted ref. |
 | `resolve` | ubuntu | Claude token only, `contents: read` | Only after exit 10. Check out the conflicted ref and let Claude edit the files, with file tools only. A workflow step then builds the merge commit with `git commit-tree -p dev -p upstream`, adds the trailer `Resolved-by: claude`, and uploads it as a bundle. |
 | `verify` | macOS `xcode-27` | none, `permissions: {}`, `persist-credentials: false` | Run `fork-sync-verify-tree.sh`, then `fork-check` (with `FORK_BASE` set to the upstream commit), `fork-test`, the fork's Swift tests and an unsigned build. Output the candidate commit id. |
-| `push` | ubuntu | `SYNC_TOKEN` only here | Run no repository code beyond trusted scripts from the checkout of `dev` at the workflow's commit. Re-fetch upstream's exact commit, re-run `fork-sync-verify-tree.sh`, call GitHub's sync-fork API for `main`, then `git push` the candidate to `dev` as a fast-forward. |
+| `push` | ubuntu | `SYNC_TOKEN` only here | Run no repository code beyond trusted scripts from the checkout of `dev` at the workflow's commit. Re-fetch upstream's exact commit, re-run `fork-sync-verify-tree.sh`, then `git push` the candidate to `dev` as a fast-forward. `main` is left alone. |
 | `release` | ubuntu | `github.token` with `actions: write` | When the decision is `release`, compute the version, dispatch `Fork release` with `publish=true` and `expected_sha`, find the run by its head commit, and `gh run watch --exit-status` it. When the decision is `hold`, open or update one issue that says why. |
 | `notify` | ubuntu | `github.token` with `issues: write` | On any failure, open one issue that links the run, or comment on the open one. |
 

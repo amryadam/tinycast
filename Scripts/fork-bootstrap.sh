@@ -2,12 +2,16 @@
 # One-time setup of the fork's release machinery on GitHub, run from your Mac.
 #
 #   ./Scripts/fork-bootstrap.sh environments [--dry-run]
+#   ./Scripts/fork-bootstrap.sh rulesets     [--dry-run]
 #   ./Scripts/fork-bootstrap.sh tap          [--dry-run] [--force]
 #   ./Scripts/fork-bootstrap.sh identity     [--dry-run] [--force]
 #   Options: --repo OWNER/NAME (the fork, default amryadam/tinycast)
 #            --tap  OWNER/NAME (the Homebrew tap, default amryadam/homebrew-fork)
 #
-#   environments  Creates the environments fork-build and fork-publish, each usable from dev only.
+#   environments  Creates the environments fork-build, fork-publish, fork-sync and fork-sync-claude,
+#                 each usable from dev only.
+#   rulesets      Protects dev from deletion and force pushes, and the release tags v*-fork.* from
+#                 being moved or deleted. No pull request is demanded, because the sync pushes to dev.
 #   tap           Creates the public tap repository, makes a deploy key for it, and stores the
 #                 private key as TAP_DEPLOY_KEY in fork-publish.
 #   identity      Makes the Tinycast Self-Signed code-signing identity and stores it as
@@ -18,7 +22,7 @@
 # The identity is never imported into any keychain on this Mac.
 # tap and identity refuse to replace a secret that exists unless given --force, because a new
 # identity makes macOS forget every permission granted to the app.
-# environments is safe to repeat: it only adds what is missing.
+# environments and rulesets are safe to repeat: they only add what is missing.
 
 set -euo pipefail
 
@@ -33,7 +37,7 @@ die() {
 }
 
 usage() {
-    echo "usage: fork-bootstrap.sh environments|tap|identity [--dry-run] [--force] [--repo OWNER/NAME] [--tap OWNER/NAME]" >&2
+    echo "usage: fork-bootstrap.sh environments|rulesets|tap|identity [--dry-run] [--force] [--repo OWNER/NAME] [--tap OWNER/NAME]" >&2
     exit 2
 }
 
@@ -41,7 +45,7 @@ usage() {
 SUB="$1"
 shift
 case "$SUB" in
-    environments | tap | identity) ;;
+    environments | rulesets | tap | identity) ;;
     *) usage ;;
 esac
 
@@ -108,7 +112,7 @@ make_work() {
 
 do_environments() {
     local env policies
-    for env in fork-build fork-publish; do
+    for env in fork-build fork-publish fork-sync fork-sync-claude; do
         gh_write api -X PUT "repos/$REPO/environments/$env" --input - \
             <<< '{"deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true}}' > /dev/null
         policies="$(gh api "repos/$REPO/environments/$env/deployment-branch-policies" \
@@ -120,7 +124,23 @@ do_environments() {
                 <<< '{"name":"dev","type":"branch"}' > /dev/null
         fi
     done
-    echo "✓ Environments fork-build and fork-publish are limited to the branch dev in $REPO."
+    echo "✓ Environments fork-build, fork-publish, fork-sync and fork-sync-claude are limited to the branch dev in $REPO."
+}
+
+do_rulesets() {
+    local existing
+    existing="$(gh api "repos/$REPO/rulesets" --jq '.[].name' 2> /dev/null || true)"
+    if grep -qxF protect-dev <<< "$existing"; then
+        echo "✓ protect-dev already exists"
+    else
+        gh_write api -X POST "repos/$REPO/rulesets" --input - > /dev/null <<< '{"name":"protect-dev","target":"branch","enforcement":"active","bypass_actors":[],"conditions":{"ref_name":{"include":["refs/heads/dev"],"exclude":[]}},"rules":[{"type":"deletion"},{"type":"non_fast_forward"}]}'
+    fi
+    if grep -qxF protect-fork-tags <<< "$existing"; then
+        echo "✓ protect-fork-tags already exists"
+    else
+        gh_write api -X POST "repos/$REPO/rulesets" --input - > /dev/null <<< '{"name":"protect-fork-tags","target":"tag","enforcement":"active","bypass_actors":[],"conditions":{"ref_name":{"include":["refs/tags/v*-fork.*"],"exclude":[]}},"rules":[{"type":"deletion"},{"type":"update"},{"type":"non_fast_forward"}]}'
+    fi
+    echo "✓ dev and the release tags are protected in $REPO."
 }
 
 do_tap() {
@@ -174,6 +194,7 @@ do_identity() {
 
 case "$SUB" in
     environments) do_environments ;;
+    rulesets) do_rulesets ;;
     tap) do_tap ;;
     identity) do_identity ;;
 esac

@@ -110,7 +110,7 @@ It holds the signing key and can read the repository, but cannot write to it.
 | Checkout | Full history, `persist-credentials: false`. |
 | Tag check | `gh api` fails the run when `v<version>` already exists. |
 | Select Xcode | The newest real `Xcode_27.x` folder, as upstream's workflow does. |
-| Gate | `FORK_BASE=origin/main ./Scripts/fork-check.sh` and `./Scripts/run-tests.sh file-search-path-test`. |
+| Gate | `FORK_BASE=upstream/main ./Scripts/fork-check.sh`, run in a `gate` job with no secret and `./Scripts/run-tests.sh file-search-path-test`. |
 | Lint the cask | Before the key is imported, so Homebrew's gems never run beside it: a throwaway local tap, `brew style` and `brew audit --cask --strict`, with a placeholder checksum. |
 | Import identity | `Scripts/fork-import-identity.sh`: a temporary keychain, unlocked, with the `.p12` imported, the key opened to `codesign` through a partition list, and the keychain on the search list. |
 | Build | `./Scripts/fork-build.sh Release`, with the version and the run number. |
@@ -148,7 +148,7 @@ Actions are pinned to a full commit SHA, and secrets are read only from `env:`.
 The notes carry the licence obligations of the AGPL-3.0-or-later:
 
 - a statement that this is an unofficial, modified version of Tinycast by Abue Ammar, not affiliated with it, with the date;
-- the upstream commit it is based on, taken from the merge base with `origin/main`;
+- the upstream commit it is based on, taken from the merge base with `upstream/main`, fetched directly;
 - the list of fork features, taken from the `# Feature:` titles in `docs/fork/*.md`;
 - a link to the exact source at the tag, and to the licence;
 - the install commands, and the one-time Gatekeeper approval.
