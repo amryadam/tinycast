@@ -52,7 +52,9 @@ Today the launcher matches only file names, so a pasted path matches nothing.
 
 The row is an ordinary `FileSearchResult`, so ⌘↵ reveals it, ⌃⌘C copies its path, and share, copy and favorite work unchanged.
 The row appears even when the path is in an ignored folder or outside the configured scopes, because an exact path states the intent.
-Line breaks never reach the parser, because the palette joins a multi-line paste with spaces first.
+A multi-line paste is joined with spaces by the palette, so it never names a path.
+An app bundle such as `Safari.app` is a folder row that launches the app, as indexed rows already do.
+↵ opens the pasted row when it is the selected one, and the Files section sits below app hits and the calculator or colour cards.
 
 ## Accepted spellings
 
@@ -82,9 +84,9 @@ All fork code is in new files, and one upstream line changes.
 
 | Layer | File | Responsibility |
 |---|---|---|
-| Model, pure | `Tinycast/Features/FileSearch/Model/FileSearchPathQuery.swift` | Spelling, quotes, escapes, `~`, `file://`, positions, the root and home rule. Existence is asked of an injected probe. |
+| Model, pure | `Tinycast/Features/FileSearch/Model/FileSearchPathQuery.swift` | Spelling, quotes, escapes, `~`, `file://`, positions, the root and home rule, and the merge that puts the pasted row first. Existence is asked of an injected probe. |
 | Service, effect | `Tinycast/Features/FileSearch/Service/FileSearchPathLookup.swift` | Asks `FileManager`, wraps the answer as a `FileSearchResult`. |
-| UI, fork-owned | `Tinycast/Features/FileSearch/UI/FileSearchCoordinator+PastedPath.swift` | A coordinator extension that adds the row, memoises it per query, and gates it on Full Disk Access. |
+| UI, fork-owned | `Tinycast/Features/FileSearch/UI/FileSearchCoordinator+PastedPath.swift` | A coordinator extension that memoises the lookup per query and second, re-checks a cached row, and hands the Full Disk Access gate to the lookup. |
 | Call site | `Tinycast/Features/Launcher/UI/LauncherScreen.swift:77` | One line calls the extension instead of `launcherFiles(for:)`. |
 
 `launcherFiles(for:)` itself is not edited, because upstream changed that function on 2026-10-16 and 2026-10-27.
@@ -105,10 +107,15 @@ enum FileSearchPathQuery {
     typealias Probe = (String) -> Kind?   // nil when nothing exists at the path
 
     static func resolve(_ query: String, homeDirectory: String, probe: Probe) -> Location?
+
+    static func leading(_ pasted: FileSearchResult?, before found: [FileSearchResult], limit: Int) -> [FileSearchResult]
 }
 
 enum FileSearchPathLookup {
-    static func result(for query: String, fileManager: FileManager = .default) -> FileSearchResult?
+    // isAllowed is asked once, just before the first stat, and never for text that is no path
+    static func result(
+        for query: String, fileManager: FileManager = .default, isAllowed: () -> Bool = { true }
+    ) -> FileSearchResult?
 }
 
 extension FileSearchCoordinator {
@@ -128,16 +135,17 @@ let files = pinned == nil ? core.fileSearchCoordinator.launcherFilesLeadingWithP
 
 1. `RootPaletteView.screen` is a computed property, so one render builds `LauncherScreen` about 14 times, and each calls the Files lookup at the call site above.
 2. `launcherFilesLeadingWithPastedPath` calls the unchanged `launcherFiles(for:)` for the usual favorites and indexed hits.
-3. A one-slot `Memo<String, FileSearchResult?>`, keyed by the query, answers repeat calls without touching the disk.
-4. On a miss, and only when `showsFilesInLauncher` and `Permissions.hasFullDiskAccess()` hold, `FileSearchPathLookup.result` runs.
-5. `FileSearchPathLookup.result` returns early without any filesystem call unless the text spells an absolute path.
-6. Otherwise it probes with `FileManager.fileExists(atPath:isDirectory:)`.
-7. The pasted-path row goes first, duplicates by `id` are removed, and the list is capped at five.
-8. ↵ calls the existing `FileSearchCoordinator.open`, which uses `NSWorkspace.open`.
+3. When `showsFilesInLauncher` holds, a one-slot `Memo`, keyed by the query and the current second, answers repeat calls without touching the disk.
+4. On a miss it calls `FileSearchPathLookup.result` with `isAllowed: Permissions.hasFullDiskAccess`.
+5. The lookup returns early without any filesystem call unless the text spells an absolute path.
+6. For a path it asks `isAllowed` once, and only if that holds does it probe with `FileManager.fileExists(atPath:isDirectory:)`.
+7. A cached row is checked with one `fileExists` on every call, so the row of a trashed file disappears at once.
+8. `FileSearchPathQuery.leading` puts the pasted row first, removes a repeated `id`, and cuts the list to five.
+9. ↵ calls the existing `FileSearchCoordinator.open`, which uses `NSWorkspace.open`.
 
 The memo has two accepted limits.
-A file created or trashed after the query was last typed shows its old state until the query changes.
-Full Disk Access granted mid-session takes effect when the query changes.
+A file created after the last lookup is seen within a second of the next render, and the palette renders only on an event, so an untouched screen can show the old state until the next keystroke or reopen.
+Full Disk Access granted mid-session takes effect the same way.
 
 ## Project registration
 
@@ -168,7 +176,7 @@ The helper target `FileIndexHelper` lists its files one by one in `project.yml`,
 
 | Claim | State |
 |---|---|
-| The parser passes its harness of 31 assertions, and the existing file-search harness still passes with the new file in its glob. | Verified |
+| The harness of 67 assertions passes, and 12 deliberately broken copies of the parser are each caught. The existing file-search harness still passes with the new file in its glob. | Verified |
 | The Xcode build fails without registering the new Service file in the project. | Verified |
 | `URL` does not collapse a doubled slash, so the parser normalises by hand. | Verified |
 | Builds here need `CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY=-`, because the `Tinycast Self-Signed` identity is absent. | Verified |
@@ -182,7 +190,8 @@ The helper target `FileIndexHelper` lists its files one by one in `project.yml`,
 | Risk | Mitigation |
 |---|---|
 | A protected-folder probe shows an access prompt on a keystroke. | The row is gated on `Permissions.hasFullDiskAccess()`, which never prompts. |
-| A network volume stalls the main thread during the probe. | The memo limits it to one probe per distinct query. Accepted beyond that. |
+| A network volume stalls the main thread during the probe. | The memo limits it to one lookup per query per second, and every render re-checks a found row. Accepted beyond that. |
+| Full Disk Access is not remembered across rebuilds of an unsigned build, so the row can vanish after a rebuild. | Build with the fork's own signing identity, described in [fork-identity.md](fork-identity.md). |
 | A clean merge that no longer compiles. | The sync script runs the tests and the build after every merge. |
 | A typed path in the wrong case, such as `/users/…`, gives a different favorite key. | Accepted, and minor. |
 | A typed path and an indexed path differ by symlink, such as `/tmp` and `/private/tmp`, giving two rows. | Accepted. Paths are never resolved through symlinks. |
@@ -204,7 +213,7 @@ The helper target `FileIndexHelper` lists its files one by one in `project.yml`,
 | Xcode Debug and Release builds | Both succeed with `CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY=-`. |
 | Format check on the fork's Swift files | `swift-format` reports no difference. |
 | `Scripts/fork-check.sh` | Exits 0. |
-| Probe count | One filesystem probe per distinct query while typing a 40-character path. |
+| Probe count | Not measured, because it needs the GUI. The memo bounds it to one lookup per query per second. |
 | Manual: paste the path of an existing file | One row appears first, and ↵ opens the file. |
 | Manual: paste the path of an existing folder | One row appears first, and ↵ opens the folder in Finder. |
 | Manual: paste a path that does not exist | No row appears and the normal results are unchanged. |

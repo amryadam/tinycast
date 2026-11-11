@@ -15,7 +15,8 @@ The fork's rules are in [README.md](README.md).
 
 ## Behaviour
 
-- It applies only with File Search on, **Show in launcher** on, and Full Disk Access granted to the app.
+- It applies only with File Search on, **Show in launcher** on, and Full Disk Access granted to the running app.
+- An app bundle such as `Safari.app` is a folder row that launches the app.
 - The row is an ordinary Files row, so ↵ opens it, ⌘↵ reveals it, and the copy, share and favorite actions all work.
 - A file opens in its default app, and a folder opens in Finder.
 - A path that does not exist, the root folder and the home folder add nothing.
@@ -41,7 +42,8 @@ The fork's rules are in [README.md](README.md).
 
 ```swift
 // FORK(path-query): lead with a pasted path.
-let files = pinned == nil ? core.fileSearchCoordinator.launcherFilesLeadingWithPastedPath(for: vm.query) : []
+let files =
+    pinned == nil ? core.fileSearchCoordinator.launcherFilesLeadingWithPastedPath(for: vm.query) : []
 ```
 
 ```shell
@@ -63,8 +65,10 @@ export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 |---|---|
 | Opening at `:line:col` | Needs an editor setting, and Tinycast has none yet. The parser already returns the position. |
 | Open with… | File rows have no such action today, so it would be a separate addition. |
-| A fresh state after the query is unchanged | The row is memoised by query, so a file created or trashed shows its old state until the query changes. |
-| Slow network volumes | One probe per distinct query on the main thread, so an unresponsive share can stall typing once. |
+| Stale state | The lookup is memoised per query and second, so a file created later shows after the next render once the second changes. A trashed row vanishes at once, because a cached row is re-checked. |
+| Slow network volumes | One lookup per query per second on the main thread, so an unresponsive share can stall typing once per keystroke while a path is typed. |
+| Full Disk Access and signing | The row needs the running app to have Full Disk Access. An unsigned or ad-hoc build can lose that grant on every rebuild, so build with the fork's own signing identity ([fork-identity.md](fork-identity.md)). |
+| Backslash in a file name | A literal backslash in a name is read as an escape, so that file is not found. |
 | `swiftlint` | Not installed here, so `Scripts/lint.sh` was not run. |
 | Manual checks in the app | Computer use is unavailable in the session that built this, so the user runs them. |
 

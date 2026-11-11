@@ -50,7 +50,7 @@ Revision 2: updated after an independent Opus review at high effort.
 | `file://otherhost/…` | No row. | Task 2 |
 | A file path with a trailing slash | Reads as the file. | Task 2 |
 | A path under a protected folder without Full Disk Access | No probe, so no macOS prompt. | Task 3 |
-| Typing a 40-character path | One filesystem probe per distinct query. | Task 5 |
+| Typing a 40-character path | At most one lookup per query per second. Not measured. | Task 5 |
 
 ## File structure
 
@@ -80,10 +80,10 @@ Revision 2: updated after an independent Opus review at high effort.
 - It prints `UNLISTED`, `STALE` or `UNMARKED` lines and exits 1, or exits 0 when everything matches. `UNMARKED` means a hunk of an upstream file has no added line containing `FORK(`.
 
 - [x] **Step 1: Draft the script and the doc** as `CHANGES.md` and `fork-check.sh`. The script passes on the current tree and catches an unlisted file and an unmarked edit.
-- [ ] **Step 2: Rework the script** to read `docs/fork/*.md`, to check each `git diff -U0` hunk for a marker in any file type, and to skip files the fork deleted.
-- [ ] **Step 3: Split the doc.** `docs/fork/README.md` keeps the rules, branches, tooling table and sync log. The feature part moves to Task 4.
-- [ ] **Step 4: Run three negative cases.** An unlisted file, an unmarked second hunk in an already-marked file, and a deleted upstream file. Expected: `UNLISTED`, `UNMARKED`, and no error for the deletion.
-- [ ] **Step 5: Commit on a new branch `fork/tooling` cut from `main`.**
+- [x] **Step 2: Rework the script** to read `docs/fork/*.md`, to check each `git diff -U0` hunk for a marker in any file type, and to skip files the fork deleted.
+- [x] **Step 3: Split the doc.** `docs/fork/README.md` keeps the rules, branches, tooling table and sync log. The feature part moves to Task 4.
+- [x] **Step 4: Run three negative cases.** An unlisted file, an unmarked second hunk in an already-marked file, and a deleted upstream file. Expected: `UNLISTED`, `UNMARKED`, and no error for the deletion.
+- [x] **Step 5: Commit on a new branch `fork/tooling` cut from `main`.**
 
 ```shell
 git switch -c fork/tooling main
@@ -91,14 +91,14 @@ git add docs/fork/README.md Scripts/fork-check.sh
 git commit -m "Add fork change tracking and its check script"
 ```
 
-- [ ] **Step 6: Create `dev` in its own worktree and merge the tooling.**
+- [x] **Step 6: Create `dev` in its own worktree and merge the tooling.**
 
 ```shell
 git worktree add -b dev /Users/amryadam/Github/tinycast-worktrees/dev main
 git -C /Users/amryadam/Github/tinycast-worktrees/dev merge --no-ff fork/tooling
 ```
 
-- [ ] **Step 7: Move the feature branch onto `dev`.** The feature branch has no commits yet, so point it at `dev` and switch back.
+- [x] **Step 7: Move the feature branch onto `dev`.** The feature branch has no commits yet, so point it at `dev` and switch back.
 
 ```shell
 git branch -f feature/path-query dev
@@ -125,16 +125,19 @@ enum FileSearchPathQuery {
     struct Location: Equatable, Sendable { let path: String; let kind: Kind; let line: Int?; let column: Int? }
     typealias Probe = (String) -> Kind?
     static func resolve(_ query: String, homeDirectory: String, probe: Probe) -> Location?
+    static func leading(_ pasted: FileSearchResult?, before found: [FileSearchResult], limit: Int) -> [FileSearchResult]
 }
 
 enum FileSearchPathLookup {
-    static func result(for query: String, fileManager: FileManager = .default) -> FileSearchResult?
+    static func result(
+        for query: String, fileManager: FileManager = .default, isAllowed: () -> Bool = { true }
+    ) -> FileSearchResult?
 }
 ```
 
 - [x] **Step 1: Write the first harness and parser**, covering shapes, spellings, positions and existence.
 - [x] **Step 2: Write the lookup.**
-- [ ] **Step 3: Write the failing tests for the review findings** in `Tests/file-search-path-test.swift`, then make them pass in the parser.
+- [x] **Step 3: Write the failing tests for the review findings** in `Tests/file-search-path-test.swift`, then make them pass in the parser.
 
 ```swift
 expect(resolve("/", existing: ["/"]) == nil, "a bare slash earns no row")
@@ -152,7 +155,7 @@ expect(resolve("/Users/test/a.txt /Users/test/b.txt", existing: files) == nil, "
 expect(resolve("/Users/test/a.txt/", existing: files)?.path == "/Users/test/a.txt", "a trailing slash is dropped")
 ```
 
-- [ ] **Step 4: Run the harness and see the new tests fail**, then fix the parser until it prints `File search path tests passed`.
+- [x] **Step 4: Run the harness and see the new tests fail**, then fix the parser until it prints `File search path tests passed`.
 
 ```shell
 export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
@@ -161,7 +164,7 @@ swiftc -swift-version 6 -Onone Tinycast/Features/FileSearch/Model/*.swift \
   Tests/file-search-path-test.swift -o /tmp/fsp-test && /tmp/fsp-test
 ```
 
-- [ ] **Step 5: Add the real-filesystem tests** for the lookup, using a temporary directory with a file, a folder and a missing path.
+- [x] **Step 5: Add the real-filesystem tests** for the lookup, using a temporary directory with a file, a folder and a missing path.
 
 ```swift
 expect(FileSearchPathLookup.result(for: file.path)?.isDirectory == false, "a real file resolves to a file row")
@@ -171,14 +174,14 @@ expect(FileSearchPathLookup.result(for: "safari") == nil, "ordinary text earns n
 expect(FileSearchPathLookup.result(for: file.path)?.id == file.path, "the row id is the path as typed")
 ```
 
-- [ ] **Step 6: Register the harness** with a marker line above it, so the check finds the edit.
+- [x] **Step 6: Register the harness** with a marker line above it, so the check finds the edit.
 
 ```shell
 # FORK(path-query)
 run file-search-path-test  $FS/Model/*.swift $FS/Service/FileSearchPathLookup.swift
 ```
 
-- [ ] **Step 7: Shorten the comments** to one line of at most 100 characters, and format only the fork's files.
+- [x] **Step 7: Shorten the comments** to one line of at most 100 characters, and format only the fork's files.
 
 ```shell
 "$(xcrun --find swift-format)" --configuration .swift-format --in-place \
@@ -187,21 +190,21 @@ run file-search-path-test  $FS/Model/*.swift $FS/Service/FileSearchPathLookup.sw
   Tests/file-search-path-test.swift
 ```
 
-- [ ] **Step 8: Regenerate the project and check the diff.** Expected: only entries for the two new sources.
+- [x] **Step 8: Regenerate the project and check the diff.** Expected: only entries for the two new sources.
 
 ```shell
 xcodegen generate
 git diff --stat Tinycast.xcodeproj
 ```
 
-- [ ] **Step 9: Build Debug.** Expected: `** BUILD SUCCEEDED **`. Nothing calls the new code yet.
+- [x] **Step 9: Build Debug.** Expected: `** BUILD SUCCEEDED **`. Nothing calls the new code yet.
 
 ```shell
 xcodebuild -project Tinycast.xcodeproj -scheme Tinycast -configuration Debug \
   -derivedDataPath /tmp/tinycast-dd CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY=- build
 ```
 
-- [ ] **Step 10: Commit.**
+- [x] **Step 10: Commit.**
 
 ```shell
 git add Tinycast/Features/FileSearch Tests/file-search-path-test.swift Scripts/run-tests.sh Tinycast.xcodeproj
@@ -225,11 +228,11 @@ extension FileSearchCoordinator {
 }
 ```
 
-- [ ] **Step 1: Implement the extension.** It calls `launcherFiles(for:)`, then, when `showsFilesInLauncher` holds, looks up the pasted-path row through a one-slot `Memo<String, FileSearchResult?>` on a `@MainActor` enum, as `CalcMemo` does. On a memo miss it returns nil unless `Permissions.hasFullDiskAccess()`. It puts the row first, drops the same `id` from the rest, and caps the list at `FileSearchQuery.launcherLimit`.
-- [ ] **Step 2: Change the one call site** in `LauncherScreen.swift:77` to call `launcherFilesLeadingWithPastedPath(for: vm.query)`, with a `// FORK(path-query): lead with a pasted path.` comment on the line above.
-- [ ] **Step 3: Regenerate the project and build Debug.** Expected: only the new extension file is added, and `** BUILD SUCCEEDED **`.
-- [ ] **Step 4: Format the new file** with the command from Task 2 Step 7.
-- [ ] **Step 5: Commit.**
+- [x] **Step 1: Implement the extension.** It calls `launcherFiles(for:)`, then, when `showsFilesInLauncher` holds, looks up the pasted-path row through a one-slot `Memo` keyed by the query and the current second, on a `@MainActor` enum as `CalcMemo` does. The lookup gets `isAllowed: Permissions.hasFullDiskAccess`, and a cached row is re-checked with one `fileExists` so a trashed row vanishes. `FileSearchPathQuery.leading` puts the row first, drops the same `id` from the rest, and cuts the list to `FileSearchQuery.launcherLimit`.
+- [x] **Step 2: Change the one call site** in `LauncherScreen.swift:77` to call `launcherFilesLeadingWithPastedPath(for: vm.query)`, with a `// FORK(path-query): lead with a pasted path.` comment on the line above.
+- [x] **Step 3: Regenerate the project and build Debug.** Expected: only the new extension file is added, and `** BUILD SUCCEEDED **`.
+- [x] **Step 4: Format the new file** with the command from Task 2 Step 7.
+- [x] **Step 5: Commit.**
 
 ```shell
 git add Tinycast/Features/FileSearch/UI Tinycast/Features/Launcher/UI/LauncherScreen.swift Tinycast.xcodeproj
@@ -245,9 +248,9 @@ git commit -m "Lead the launcher's Files section with a pasted path"
 **Interfaces:**
 - Produces: a feature change log with a `| File |` table that lists every file in the File Structure table above for this feature, including `Tinycast.xcodeproj/project.pbxproj` and the marked hooks.
 
-- [ ] **Step 1: Write `docs/fork/path-query.md`** with behaviour, spellings, the file table, the hooks, how to run the tests, what is not done, and how to remove the feature. Removal includes the project file.
-- [ ] **Step 2: Run `./Scripts/fork-check.sh`.** Expected: exit 0.
-- [ ] **Step 3: Commit.**
+- [x] **Step 1: Write `docs/fork/path-query.md`** with behaviour, spellings, the file table, the hooks, how to run the tests, what is not done, and how to remove the feature. Removal includes the project file.
+- [x] **Step 2: Run `./Scripts/fork-check.sh`.** Expected: exit 0.
+- [x] **Step 3: Commit.**
 
 ```shell
 git add docs/fork
@@ -259,18 +262,18 @@ git commit -m "Document the path query feature"
 **Files:**
 - None changed. This task records evidence.
 
-- [ ] **Step 1: Run the whole suite.** Expected: every harness passes.
+- [x] **Step 1: Run the whole suite.** Result: 111 of 114 pass. `form-input-test` and `callout-test` fail the same way on clean upstream, and `mcp-stdio-test` failed only under load and passes alone.
 
 ```shell
 ./Scripts/run-tests.sh
 ```
 
-- [ ] **Step 2: Build Release** as well as Debug, as `docs/testing.md` requires. Expected: `** BUILD SUCCEEDED **` for both.
-- [ ] **Step 3: Check formatting of the fork's Swift files only.** Expected: no output from `swift-format` diffs.
-- [ ] **Step 4: Run `./Scripts/fork-check.sh`.** Expected: exit 0.
-- [ ] **Step 5: Lint.** `swiftlint` is not installed, so `./Scripts/lint.sh` cannot run. Record the skip in `docs/fork/path-query.md` unless the user approves installing it.
-- [ ] **Step 6: Count probes.** Temporarily count calls to `FileSearchPathLookup.result`, type one 40-character path into a Debug build, and expect one call per distinct query. Remove the counter.
-- [ ] **Step 7: Manual checks** in the Debug app `Tinycast Dev.app`, with File Search and **Show in launcher** on. Computer use is unavailable here, so the user runs these and reports.
+- [x] **Step 2: Build Release** as well as Debug, as `docs/testing.md` requires. Result: both succeed with signing off.
+- [x] **Step 3: Check formatting of the fork's Swift files only.** Result: clean, and the one edited line in `LauncherScreen.swift` is format-clean.
+- [x] **Step 4: Run `./Scripts/fork-check.sh`.** Result: exit 0.
+- [ ] **Step 5 (skipped): Lint.** `swiftlint` is not installed, so `./Scripts/lint.sh` cannot run. Record the skip in `docs/fork/path-query.md` unless the user approves installing it.
+- [ ] **Step 6 (not done, needs the GUI): Count probes.** Temporarily count calls to `FileSearchPathLookup.result`, type one 40-character path into a Debug build, and expect one call per distinct query. Remove the counter.
+- [ ] **Step 7 (not done, needs the GUI): Manual checks** in the Debug app `Tinycast Dev.app`, with File Search and **Show in launcher** on. Computer use is unavailable here, so the user runs these and reports.
 
 | Check | Pass condition |
 |---|---|
@@ -287,7 +290,7 @@ git commit -m "Document the path query feature"
 **Files:**
 - None changed.
 
-- [ ] **Step 1: Give a fresh Opus reviewer at high effort** the full diff against `upstream/main`, the spec and this plan, with write access removed.
+- [x] **Step 1: Give a fresh Opus reviewer at high effort** the full diff against `upstream/main`, the spec and this plan, with write access removed.
 - [ ] **Step 2: Triage every finding** as fixed, rejected with a reason, or deferred into `docs/fork/path-query.md` under Not done.
 - [ ] **Step 3: Re-run Task 5 steps 1 to 4** after any fix.
 
