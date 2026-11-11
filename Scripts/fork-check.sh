@@ -11,8 +11,8 @@ set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 
 BASE="${FORK_BASE:-upstream/main}"
-# Generated files cannot carry a comment, so a marker is not asked of them.
-UNMARKED_OK="${FORK_UNMARKED_OK:-^Tinycast\.xcodeproj/}"
+# Generated and data files cannot carry a comment, so a marker is not asked of them.
+UNMARKED_OK="${FORK_UNMARKED_OK:-^Tinycast\.xcodeproj/|\.(xcstrings|json|plist|entitlements)$}"
 
 docs=(docs/fork/*.md)
 [ -e "${docs[0]}" ] || {
@@ -26,7 +26,11 @@ fi
 MERGE_BASE=$(git merge-base "$BASE" HEAD) || exit 2
 
 # Committed, staged, unstaged and untracked, so it is right before a commit as well as after.
-changed=$({ git diff --name-only "$MERGE_BASE"; git ls-files --others --exclude-standard; } | sort -u)
+# quotePath off, so a file name with non-ASCII characters is not quoted and never matches the docs.
+changed=$({
+    git -c core.quotePath=off diff --name-only --no-renames "$MERGE_BASE"
+    git -c core.quotePath=off ls-files --others --exclude-standard
+} | sort -u)
 # Rows of the tables headed `| File |`, each starting with a backticked path: | `path` | ...
 listed=$(awk '
     /^\| File \|/ { inside = 1; next }
