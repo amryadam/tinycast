@@ -1129,6 +1129,7 @@ test_sync_workflow_static() {
     # Edits are allowed by the permission mode, because an allow-list entry does not cover them in
     # agent mode; MCP servers are never loaded; only the conflicted paths are staged, by a git that
     # runs no hook; and the repository's own tool configuration is moved out of the way.
+    assert_contains "$resolve" "Only merge. Do not fix"
     assert_contains "$resolve" "--permission-mode acceptEdits"
     assert_contains "$resolve" "--strict-mcp-config"
     assert_contains "$resolve" "core.hooksPath=/dev/null"

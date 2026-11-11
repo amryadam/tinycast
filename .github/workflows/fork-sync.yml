@@ -200,6 +200,10 @@ jobs:
             the fork's changes together. The fork's changes are the code near lines that contain FORK(.
             Rules:
             - Edit only the files that contain conflict markers.
+            - Only merge. Do not fix, improve, refactor or reformat anything, and do not correct
+              any bug, warning or style problem you notice in upstream's code or in the fork's.
+              Inside a conflict, keep both sides' lines exactly as written and combine them; change
+              a line only when the two sides cannot both stand as they are.
             - Do not touch .github/, Scripts/fork-*, or docs/fork/.
             - Do not edit Tinycast.xcodeproj/project.pbxproj; leave its markers if it has any.
             - Leave no conflict marker behind in any file you edit.
