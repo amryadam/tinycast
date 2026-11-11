@@ -62,7 +62,125 @@ test_build_print_settings() {
     assert_lacks "$without" "CURRENT_PROJECT_VERSION"
 }
 
-ALL=(validate_accepts validate_rejects build_print_settings)
+# make_fake_app DIR [BUNDLE_ID] [VERSION] [sign|nosign]: a minimal signed bundle named Tinycast Fork.app.
+make_fake_app() {
+    local dir="$1" id="${2:-com.amryadam.tinycast}" version="${3:-1.2.3}" sign="${4:-sign}"
+    local app="$dir/Tinycast Fork.app"
+    mkdir -p "$app/Contents/MacOS"
+    cp /usr/bin/true "$app/Contents/MacOS/Tinycast"
+    cat > "$app/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleExecutable</key><string>Tinycast</string>
+<key>CFBundleIdentifier</key><string>$id</string>
+<key>CFBundleName</key><string>Tinycast Fork</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleShortVersionString</key><string>$version</string>
+<key>CFBundleVersion</key><string>1</string>
+</dict></plist>
+PLIST
+    if [ "$sign" = sign ]; then
+        codesign --force --sign - "$app" > /dev/null 2>&1
+    else
+        codesign --remove-signature "$app/Contents/MacOS/Tinycast" > /dev/null 2>&1
+    fi
+    echo "$app"
+}
+
+test_import_requires_env() {
+    local out
+    out="$(env -u P12_BASE64 P12_PASSWORD=hunter2-secret RUNNER_TEMP="$WORK" \
+        "$ROOT/Scripts/fork-import-identity.sh" 2>&1)" && fail "ran without P12_BASE64"
+    assert_contains "$out" "P12_BASE64"
+    assert_lacks "$out" "hunter2-secret"
+    out="$(env -u P12_PASSWORD P12_BASE64=Zm9v RUNNER_TEMP="$WORK" \
+        "$ROOT/Scripts/fork-import-identity.sh" 2>&1)" && fail "ran without P12_PASSWORD"
+    assert_contains "$out" "P12_PASSWORD"
+    assert_lacks "$out" "BEGIN"
+    assert_lacks "$out" "PRIVATE"
+    out="$(env -u RUNNER_TEMP P12_BASE64=Zm9v P12_PASSWORD=x \
+        "$ROOT/Scripts/fork-import-identity.sh" 2>&1)" && fail "ran without RUNNER_TEMP"
+    assert_contains "$out" "RUNNER_TEMP"
+}
+
+test_import_cleanup_is_safe() {
+    local before after
+    mkdir -p "$WORK/rt"
+    before="$(security list-keychains -d user)"
+    P12_BASE64=x P12_PASSWORD=x RUNNER_TEMP="$WORK/rt" "$ROOT/Scripts/fork-import-identity.sh" --cleanup \
+        > /dev/null 2>&1 || fail "--cleanup failed when nothing was imported"
+    after="$(security list-keychains -d user)"
+    [ "$before" = "$after" ] || fail "--cleanup changed the keychain search list"
+    [ -z "$(ls -A "$WORK/rt")" ] || fail "--cleanup left files in RUNNER_TEMP"
+}
+
+test_package_ok() {
+    local app out_dir sum listed entry
+    app="$(make_fake_app "$WORK/ok")"
+    out_dir="$WORK/ok/out"
+    sum="$("$ROOT/Scripts/fork-package.sh" "$app" 1.2.3-fork.1 "$out_dir")" || {
+        fail "packaging a good app failed"
+        return
+    }
+    [ -f "$out_dir/Tinycast-Fork-1.2.3-fork.1.zip" ] || fail "no zip"
+    [ -f "$out_dir/Tinycast-Fork-1.2.3-fork.1.zip.sha256" ] || fail "no checksum file"
+    [ "$sum" = "$(shasum -a 256 "$out_dir/Tinycast-Fork-1.2.3-fork.1.zip" | cut -d' ' -f1)" ] \
+        || fail "printed checksum differs from shasum"
+    (cd "$out_dir" && shasum -a 256 -c Tinycast-Fork-1.2.3-fork.1.zip.sha256 > /dev/null) \
+        || fail "checksum file does not verify"
+    listed="$(unzip -Z1 "$out_dir/Tinycast-Fork-1.2.3-fork.1.zip")"
+    assert_contains "$listed" "Tinycast Fork.app/Contents/Info.plist"
+    assert_contains "$listed" "LICENSE"
+    assert_contains "$listed" "NOTICE.md"
+    while IFS= read -r entry; do
+        case "$entry" in
+            "Tinycast Fork.app/"* | "Tinycast Fork.app" | LICENSE | NOTICE.md | __MACOSX/*) ;;
+            *) fail "unexpected zip entry: $entry" ;;
+        esac
+    done <<< "$listed"
+}
+
+test_package_rejects() {
+    local out app
+    [ -x "$ROOT/Scripts/fork-package.sh" ] || {
+        fail "Scripts/fork-package.sh is missing or not executable"
+        return
+    }
+    reject() { # reject LABEL APP VERSION
+        out="$WORK/rej-$1"
+        if "$ROOT/Scripts/fork-package.sh" "$2" "$3" "$out" > /dev/null 2>&1; then
+            fail "accepted: $1"
+        fi
+        ls "$out"/*.zip > /dev/null 2>&1 && fail "left a zip behind for: $1"
+    }
+    reject wrong-id "$(make_fake_app "$WORK/a1" com.example.other)" 1.2.3-fork.1
+    reject wrong-version "$(make_fake_app "$WORK/a2" com.amryadam.tinycast 9.9.9)" 1.2.3-fork.1
+    reject unsigned "$(make_fake_app "$WORK/a3" com.amryadam.tinycast 1.2.3 nosign)" 1.2.3-fork.1
+    reject missing "$WORK/a4/Tinycast Fork.app" 1.2.3-fork.1
+    app="$(make_fake_app "$WORK/a5")"
+    reject bad-version "$app" "1.2.3"
+    mkdir -p "$WORK/a6"
+    cp -R "$app" "$WORK/a6/Other.app"
+    reject wrong-name "$WORK/a6/Other.app" 1.2.3-fork.1
+}
+
+test_package_authority() {
+    local app
+    [ -x "$ROOT/Scripts/fork-package.sh" ] || {
+        fail "Scripts/fork-package.sh is missing or not executable"
+        return
+    }
+    app="$(make_fake_app "$WORK/auth")"
+    "$ROOT/Scripts/fork-package.sh" "$app" 1.2.3-fork.1 "$WORK/auth/out" \
+        --require-authority "Tinycast Self-Signed" > /dev/null 2>&1 \
+        && fail "accepted an ad-hoc signature when Tinycast Self-Signed was required"
+    ls "$WORK/auth/out"/*.zip > /dev/null 2>&1 && fail "left a zip behind"
+    return 0
+}
+
+ALL=(validate_accepts validate_rejects build_print_settings import_requires_env import_cleanup_is_safe
+    package_ok package_rejects package_authority)
 
 if [ $# -gt 0 ]; then
     names=("$@")

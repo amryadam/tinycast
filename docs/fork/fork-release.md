@@ -11,7 +11,7 @@ The fork's rules are in [README.md](README.md).
 
 ## Status
 
-Spec and plan written, and Task 1 (version validation and the build's version settings) is done.
+Spec and plan written, and Tasks 1 and 2 (version validation, the build's version settings, identity import and packaging) are done.
 `Scripts/fork-build.sh` is listed in [fork-identity.md](fork-identity.md); this feature adds `FORK_VERSION`, `FORK_BUILD_NUMBER` and `--print-settings` to it.
 Run the tests with `./Scripts/fork-test.sh`.
 Nothing is published, and no secret is uploaded.
@@ -25,3 +25,5 @@ Nothing is published, and no secret is uploaded.
 | `docs/fork/fork-release-plan.md` | New | The plan. | None |
 | `Scripts/fork-test.sh` | New | Runs the tests of every release script, with no network or identity. | None |
 | `Scripts/fork-release-validate.sh` | New | Accepts only `MAJOR.MINOR.PATCH-fork.N` and prints the base version. | None |
+| `Scripts/fork-import-identity.sh` | New | CI only: imports the signing identity into a throwaway keychain, and removes it with `--cleanup`. | None |
+| `Scripts/fork-package.sh` | New | Verifies the built app and zips it with the licence files and a SHA-256. | None |
