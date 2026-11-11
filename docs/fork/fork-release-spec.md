@@ -207,7 +207,7 @@ end
 
 | Item | Detail |
 |---|---|
-| Install | `brew tap amryadam/fork`, then `brew install --cask amryadam/fork/tinycast-fork` |
+| Install | `brew tap amryadam/fork`, then `brew trust --cask amryadam/fork/tinycast-fork`, then `brew install --cask amryadam/fork/tinycast-fork`. Homebrew 7 refuses to load a cask from an untrusted tap, and the trust list is `~/.homebrew/trust.json`. |
 | Upgrade | `brew upgrade --cask tinycast-fork` |
 | Coexistence | The token and the app name differ from the official `tinycast` cask, so both can be installed. |
 | Shared folders | The cask does not zap `~/Library/Caches/ClipboardTextHelper`, which both apps use. |

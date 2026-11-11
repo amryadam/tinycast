@@ -140,7 +140,7 @@ git commit -m "Add scripts to import the signing identity and package the app"
 **Interfaces:**
 - Produces: `./Scripts/fork-release-notes.sh VERSION UPSTREAM_SHA REPO`, which prints Markdown notes to standard output.
 
-- [ ] **Step 1: Write the failing test** `test_notes_licence_items`. It runs the script for `0.12.11-fork.1`, a sample sha and `amryadam/tinycast`, and asserts the output contains: `unofficial`, `not affiliated`, `modified version of Tinycast`, `Abue Ammar`, `AGPL-3.0-or-later`, a date in `YYYY-MM-DD` form, the sha, `https://github.com/amryadam/tinycast/tree/v0.12.11-fork.1`, a link to the licence, every `# Feature:` title found in `docs/fork/*.md`, `brew tap amryadam/fork`, `brew install --cask amryadam/fork/tinycast-fork`, and `Privacy & Security`.
+- [ ] **Step 1: Write the failing test** `test_notes_licence_items`. It runs the script for `0.12.11-fork.1`, a sample sha and `amryadam/tinycast`, and asserts the output contains: `unofficial`, `not affiliated`, `modified version of Tinycast`, `Abue Ammar`, `AGPL-3.0-or-later`, a date in `YYYY-MM-DD` form, the sha, `https://github.com/amryadam/tinycast/tree/v0.12.11-fork.1`, a link to the licence, every `# Feature:` title found in `docs/fork/*.md`, `brew tap amryadam/fork`, `brew trust --cask amryadam/fork/tinycast-fork`, `brew install --cask amryadam/fork/tinycast-fork`, and `Privacy & Security`.
 - [ ] **Step 2: Run it and see it fail.**
 - [ ] **Step 3: Implement the script** with a here-document and a loop over `docs/fork/*.md`.
 - [ ] **Step 4: Run the test, `shellcheck`, and `./Scripts/fork-check.sh`.** Expected: pass, no output, exit 0.
@@ -305,10 +305,11 @@ gh workflow run fork-release.yml --repo amryadam/tinycast --ref dev -f version=0
 - [ ] **Step 3: Verify the release page** has the zip, the checksum, the notes and the tag, and is marked latest.
 - [ ] **Step 4: Download the released zip, not the dry-run artifact,** and repeat the checks from Task 10 Step 3 on it.
 - [ ] **Step 5: Verify the tap's cask** names that version and the same SHA-256 as the asset.
-- [ ] **Step 6: Ask the user to approve installing it here,** then tap and install.
+- [ ] **Step 6: Ask the user to approve installing it here,** which includes trusting that one cask in Homebrew, then tap, trust and install.
 
 ```shell
 brew tap amryadam/fork
+brew trust --cask amryadam/fork/tinycast-fork
 brew install --cask amryadam/fork/tinycast-fork
 ```
 

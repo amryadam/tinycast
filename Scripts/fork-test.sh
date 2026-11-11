@@ -56,6 +56,8 @@ test_build_print_settings() {
     assert_contains "$with" "CURRENT_PROJECT_VERSION=42"
     assert_contains "$with" "TINYCAST_BUNDLE_IDENTIFIER=com.amryadam.tinycast"
     assert_contains "$with" "PRODUCT_NAME=Tinycast Fork"
+    assert_contains "$with" "ARCHS=arm64"
+    assert_contains "$with" "ONLY_ACTIVE_ARCH=NO"
     without="$(env -u FORK_VERSION -u FORK_BUILD_NUMBER "$ROOT/Scripts/fork-build.sh" --print-settings)" \
         || fail "--print-settings failed without a version"
     assert_lacks "$without" "MARKETING_VERSION"
@@ -195,7 +197,7 @@ test_notes_licence_items() {
         "https://github.com/abue-ammar/tinycast/commit/$sha" \
         "https://github.com/amryadam/tinycast/tree/v0.12.11-fork.1" \
         "https://github.com/amryadam/tinycast/blob/v0.12.11-fork.1/LICENSE" \
-        "path-query" "brew tap amryadam/fork" "brew install --cask amryadam/fork/tinycast-fork" \
+        "path-query" "brew tap amryadam/fork" "brew trust --cask amryadam/fork/tinycast-fork" "brew install --cask amryadam/fork/tinycast-fork" \
         "Privacy & Security"; do
         assert_contains "$out" "$needle"
     done
@@ -477,10 +479,85 @@ test_bootstrap_rejects_bad_args() {
     return 0
 }
 
+# job_block FILE NAME: the lines of one top-level job.
+job_block() {
+    awk -v want="  $2:" '/^  [A-Za-z0-9_-]+:/ { on = ($0 == want) } on' "$1"
+}
+
+test_workflow_static() {
+    local wf="${FORK_WORKFLOW:-$ROOT/.github/workflows/fork-release.yml}" build publish bad
+    [ -f "$wf" ] || {
+        fail "the workflow is missing: $wf"
+        return
+    }
+    if command -v actionlint > /dev/null; then
+        # xcode-27 is a label GitHub provides but actionlint does not know.
+        printf 'self-hosted-runner:\n  labels:\n    - xcode-27\n' > "$WORK/actionlint.yaml"
+        actionlint -config-file "$WORK/actionlint.yaml" "$wf" || fail "actionlint found problems"
+    else
+        echo "  (actionlint is not installed, so its checks are skipped)"
+    fi
+
+    build="$(job_block "$wf" build)"
+    publish="$(job_block "$wf" publish)"
+    [ -n "$build" ] && [ -n "$publish" ] || {
+        fail "the workflow needs jobs named build and publish"
+        return
+    }
+
+    grep -qx 'permissions: {}' "$wf" || fail "no top-level permissions: {}"
+    grep -q '^  workflow_dispatch:' "$wf" || fail "workflow_dispatch is not a trigger"
+    grep -Eq '^  (push|pull_request|pull_request_target|schedule|workflow_run|release|issues|issue_comment|repository_dispatch):' "$wf" \
+        && fail "the workflow has a trigger other than workflow_dispatch"
+    grep -q 'default: false' "$wf" || fail "publish does not default to false"
+
+    assert_contains "$build" "runs-on: xcode-27"
+    assert_contains "$build" "environment: fork-build"
+    assert_contains "$build" "contents: read"
+    assert_contains "$build" "if: github.ref == 'refs/heads/dev'"
+    assert_lacks "$build" ": write"
+    assert_lacks "$build" "gh release"
+    assert_lacks "$build" "git push"
+    assert_lacks "$build" "TAP_DEPLOY_KEY"
+    assert_contains "$build" "SIGNING_P12_BASE64"
+    assert_contains "$build" "SIGNING_P12_PASSWORD"
+    assert_contains "$build" "--require-authority"
+    assert_contains "$build" "retention-days: 1"
+
+    assert_contains "$publish" "environment: fork-publish"
+    assert_contains "$publish" "contents: write"
+    assert_contains "$publish" "if: inputs.publish"
+    assert_contains "$publish" "needs: build"
+    assert_contains "$publish" "--latest"
+    # shellcheck disable=SC2016 # a literal $GITHUB_SHA is wanted
+    assert_contains "$publish" '--target "$GITHUB_SHA"'
+    assert_contains "$publish" "TAP_DEPLOY_KEY"
+    assert_lacks "$publish" "SIGNING_P12"
+    assert_lacks "$publish" "--force"
+
+    # Inputs and secrets only inside an env: block, never spliced into a script or an argument.
+    bad="$(awk '
+        /^[[:space:]]*env:[[:space:]]*$/ { match($0, /^ */); envind = RLENGTH; inenv = 1; next }
+        inenv { match($0, /^ */); if ($0 !~ /^[[:space:]]*$/ && RLENGTH <= envind) inenv = 0 }
+        /\$\{\{ *(inputs|secrets|github\.event)[.[]/ && !inenv { print NR ": " $0 }
+    ' "$wf")"
+    [ -z "$bad" ] || fail "an input or secret is used outside env: $bad"
+
+    # Every action is pinned to a full commit SHA.
+    bad="$(grep -E '^[[:space:]]*(- )?uses:' "$wf" | grep -vE '@[0-9a-f]{40}[[:space:]]*$' || true)"
+    [ -z "$bad" ] || fail "an action is not pinned to a commit: $bad"
+
+    [ "$(grep -c 'actions/checkout@' "$wf")" = "$(grep -c 'persist-credentials: false' "$wf")" ] \
+        || fail "every checkout must set persist-credentials: false"
+    [ "$(grep -c 'if: always()' "$wf")" -ge 2 ] || fail "each job needs an if: always() cleanup step"
+    grep -q 'concurrency:' "$wf" || fail "no concurrency group"
+}
+
 ALL=(validate_accepts validate_rejects build_print_settings import_requires_env import_cleanup_is_safe
     package_ok package_rejects package_authority notes_licence_items notes_rejects cask_contents cask_rejects cask_from_release cask_style
     bootstrap_dry_run bootstrap_environments_calls bootstrap_identity_calls bootstrap_tap_calls
-    bootstrap_refuses_overwrite bootstrap_no_leftovers bootstrap_rejects_bad_args)
+    bootstrap_refuses_overwrite bootstrap_no_leftovers bootstrap_rejects_bad_args
+    workflow_static)
 
 if [ $# -gt 0 ]; then
     names=("$@")

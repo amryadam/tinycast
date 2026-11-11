@@ -30,7 +30,10 @@ IDENTITY="Tinycast Self-Signed"
 DERIVED="${FORK_BUILD_DIR:-$HOME/Library/Caches/tinycast-fork/DerivedData}"
 
 # What the build overrides, one per line, so a test can read it without building.
+# ARCHS is pinned to arm64 as upstream's release does, and as the cask promises.
 SETTINGS=(
+    "ARCHS=arm64"
+    "ONLY_ACTIVE_ARCH=NO"
     "PRODUCT_NAME=$APP_NAME"
     "TINYCAST_BUNDLE_IDENTIFIER=$BUNDLE_ID"
     "TINYCAST_URL_SCHEME=$URL_SCHEME"

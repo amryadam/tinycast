@@ -57,7 +57,10 @@ cat <<NOTES
 ## Install
 
     brew tap $OWNER/fork
+    brew trust --cask $OWNER/fork/tinycast-fork
     brew install --cask $OWNER/fork/tinycast-fork
+
+Homebrew refuses to load a cask from a tap you have not trusted, so read the cask first and then trust it as above.
 
 This build is signed with a self-signed certificate and is not notarised.
 macOS may refuse the first launch.
