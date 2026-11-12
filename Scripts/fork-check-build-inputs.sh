@@ -10,7 +10,12 @@
 #     lower-case copy of a fork script could replace the checked one;
 #   - a shell-script build phase, or a Swift package reference, in the Xcode project;
 #   - a script, package or generation command in project.yml;
-#   - an action that runs a command in a shared scheme.
+#   - an action that runs a command in a shared scheme;
+#   - a replaced compiler, linker or tool, a compiler plugin, a custom build rule or an external
+#     project, in the project, project.yml or any xcconfig;
+#   - a symlink where any of these build inputs should be.
+# This is a list of known ways, not a proof: Xcode has others. It narrows what upstream can do
+# while the key is present; it does not make building third-party code beside the key safe.
 # --paths-only checks the case collisions alone, which is all the upstream sync needs.
 
 set -euo pipefail
@@ -47,6 +52,22 @@ fi
 if grep -qE '^[[:space:]]*(scripts|preBuildScripts|postBuildScripts|packages|buildToolPlugins|preGenCommand|postGenCommand):' < <(show project.yml); then
     die "project.yml has a script, a package or a generation command"
 fi
+# A symlink where a build input should be: git stores only the path it points at, so this check
+# would read that path instead of the file, and Xcode would follow it to something else.
+if grep -qE '(^|/)(project\.yml|[^/]*\.(xcodeproj|xcworkspace|xcconfig|xcscheme|xcplan|pbxproj)|Package\.swift|Package\.resolved)(/|$)' \
+    < <(git ls-tree -r --format='%(objectmode) %(path)' "$tree" | awk '$1 == "120000" { sub(/^120000 /, ""); print }'); then
+    die "a build input is a symlink"
+fi
+
+# Other ways to make a build run a program: a replaced compiler, linker or tool, a compiler plugin,
+# a custom build rule, an external project. In the project, in project.yml and in any xcconfig.
+settings='(^|[^A-Za-z0-9_])(SWIFT_EXEC|SWIFT_DRIVER|SWIFT_COMPILER_PATH|CLANG|CPLUSPLUS|CC|LD|LDPLUSPLUS|LIBTOOL|AR|STRIP_PATH)[[:space:]]*[:=]|load-plugin|plugin-path|-Xfrontend|PBXBuildRule|buildRules:|PBXReferenceProxy|projectReferences:'
+while IFS= read -r -d '' path; do
+    if grep -qE "$settings" < <(show "$path"); then
+        die "$path replaces a build tool, loads a plugin or adds a build rule"
+    fi
+done < <({ printf '%s\0' "$pbx" project.yml; git ls-tree -r --name-only -z "$tree" | grep -zE '\.xcconfig$' || true; })
+
 while IFS= read -r -d '' path; do
     if grep -qiE '<ExecutionAction' < <(show "$path"); then
         die "$path runs a command"

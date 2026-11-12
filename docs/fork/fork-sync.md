@@ -10,6 +10,7 @@ The plan is [fork-update-sync-plan.md](fork-update-sync-plan.md), and the in-app
 - [One-time setup](#one-time-setup)
 - [Rehearsing](#rehearsing)
 - [Limits](#limits)
+- [Known weakness](#known-weakness)
 - [Files](#files)
 
 ## How a sync runs
@@ -60,7 +61,8 @@ Why the jobs are split:
 | `Scripts/fork-sync-verify-tree.sh` | Refuses any candidate merge that is not exactly what git computes, apart from the conflicted files. |
 | `Scripts/fork-sync-decide.sh` | Says `skip`, `hold` or `release` for the changes since the last fork tag. |
 | `Scripts/fork-gate-tests.sh` | Runs the fork's own Swift harnesses and upstream's update harnesses, found by name so an upstream rename needs no change. A fork harness missing from the registry is an error. |
-| `Scripts/fork-check-build-inputs.sh` | Refuses a tree that could run code of its own during a build, or holds paths that differ only by case. |
+| `Scripts/fork-check-build-inputs.sh` | Refuses a tree with a script build phase, a package, a scheme action, a replaced compiler or tool, a compiler plugin, a custom build rule, an external project, a symlinked build input, or paths that differ only by case. |
+| `Scripts/fork-last-release.sh` | Prints the last fork release that is published and carries both its files, so a tag left by a failed publish cannot hide the need for a release. |
 
 ## One-time setup
 
@@ -111,6 +113,14 @@ gh workflow run fork-sync.yml --repo amryadam/tinycast --ref dev \
 - Upstream's own workflow changes are never taken. If upstream's release process changes, `Fork release` is not updated by the sync.
 - The merge itself still carries upstream's workflow files in its history, so the first run after upstream changes one shows whether GitHub accepts the push with the token as it is.
 
+## Known weakness
+
+`Fork release` builds third-party sources with the signing key already in the keychain.
+`fork-check-build-inputs.sh` refuses the known ways a build can run a program of its own, but it is a list, not a proof, and Xcode has more ways than any list holds.
+The sound design builds without the key and signs the finished app in a separate job that runs only the fork's own commands.
+That changes how every release is signed, so it needs a test with the real identity before it replaces this one.
+Until then the protection is the list, the `dev`-only environments, and the fact that upstream's own releases are already trusted enough to be merged and installed.
+
 ## Files
 
 | File | Change | Purpose | Conflict risk |
@@ -122,4 +132,5 @@ gh workflow run fork-sync.yml --repo amryadam/tinycast --ref dev \
 | `Scripts/fork-sync-decide.sh` | New | See the table above. | None |
 | `Scripts/fork-check-build-inputs.sh` | New | See the table above. | None |
 | `Scripts/fork-gate-tests.sh` | New | See the table above. | None |
+| `Scripts/fork-last-release.sh` | New | See the table above. | None |
 | `.github/workflows/fork-sync.yml` | New | The `Upstream sync` workflow described above. | None |

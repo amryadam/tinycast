@@ -17,7 +17,13 @@ cd "$(dirname "$0")/.." || exit 1
 
 owned=(file-search-path-test file-search-fragment-test fork-update-test)
 
-names="$(sed -n 's/^run  *\([^ ]*\).*/\1/p' Scripts/run-tests.sh)"
+# A registration is `run [slow] [-O] [index] NAME SOURCES...`. An index-only harness cannot be run by
+# name, so it is left out.
+names="$(awk '$1 == "run" {
+    i = 2; indexed = 0
+    while ($i == "slow" || $i == "-O" || $i == "index") { if ($i == "index") indexed = 1; i++ }
+    if (!indexed) print $i
+}' Scripts/run-tests.sh)"
 selected=()
 for name in "${owned[@]}"; do
     if ! grep -qxF "$name" <<< "$names"; then

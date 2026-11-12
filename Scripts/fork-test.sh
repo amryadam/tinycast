@@ -1029,6 +1029,54 @@ test_build_inputs() {
     refuses scheme-action Tinycast.xcodeproj/xcshareddata/xcschemes/Tinycast.xcscheme '<ExecutionAction ActionType = "x">'
     refuses scheme-action-lc Tinycast.xcodeproj/xcshareddata/xcschemes/Tinycast.xcscheme '<executionaction>'
 
+    # Other ways to make a build run a program of its own: a replaced compiler or linker, a compiler
+    # plugin, a custom build rule, an external project. In the project, project.yml or any xcconfig.
+    # shellcheck disable=SC2016 # a literal $(SRCROOT) is wanted in the fixtures
+    refuses swiftexec-pbx Tinycast.xcodeproj/project.pbxproj 'SWIFT_EXEC = "$(SRCROOT)/Scripts/wrap.sh";'
+    refuses swiftexec-yml project.yml '    SWIFT_EXEC: ./wrap.sh'
+    refuses cc-yml project.yml '    CC: ./cc.sh'
+    refuses ld-pbx Tinycast.xcodeproj/project.pbxproj 'LD = /tmp/ld;'
+    refuses libtool-pbx Tinycast.xcodeproj/project.pbxproj 'LIBTOOL = x;'
+    refuses plugin-flag Tinycast.xcodeproj/project.pbxproj 'OTHER_SWIFT_FLAGS = "-load-plugin-executable /tmp/p#M";'
+    refuses plugin-path project.yml '    OTHER_SWIFT_FLAGS: -plugin-path /tmp/p'
+    refuses xfrontend project.yml '    OTHER_SWIFT_FLAGS: -Xfrontend -load-plugin-library'
+    refuses buildrule Tinycast.xcodeproj/project.pbxproj '/* Begin PBXBuildRule section */'
+    refuses buildrules-yml project.yml '    buildRules:'
+    refuses refproxy Tinycast.xcodeproj/project.pbxproj 'isa = PBXReferenceProxy;'
+    refuses projectrefs project.yml 'projectReferences:'
+    # An xcconfig anywhere in the tree counts too.
+    case_dir="$WORK/bi-xcconfig"
+    make_inputs_repo "$case_dir"
+    # shellcheck disable=SC2016 # a literal $(SRCROOT) is wanted
+    (cd "$case_dir" && mkdir -p Config && echo 'SWIFT_EXEC = $(SRCROOT)/x.sh' > Config/Release.xcconfig && gitq add -A && gitq commit -qm xcconfig)
+    (cd "$case_dir" && "$script" > /dev/null 2>&1) && fail "accepted a compiler override in an xcconfig"
+    case_dir="$WORK/bi-xcconfig-ok"
+    make_inputs_repo "$case_dir"
+    (cd "$case_dir" && mkdir -p Config && printf 'OTHER_LDFLAGS = -lc++\nSWIFT_VERSION = 6.0\nCLANG_ENABLE_MODULES = YES\nCC_FLAGS_X = 1\n' > Config/Release.xcconfig && gitq add -A && gitq commit -qm ok)
+    (cd "$case_dir" && "$script" > /dev/null 2>&1) || fail "refused ordinary build settings that only look similar"
+
+    # A symlink where a build input should be: git stores only its target path, so what it points at
+    # would never be read by this check, but Xcode follows it.
+    symlinked() { # NAME PATH: replace PATH by a symlink and commit
+        case_dir="$WORK/bi-link-$1"
+        make_inputs_repo "$case_dir"
+        (cd "$case_dir" && echo '<Scheme><ExecutionAction/></Scheme>' > evil.xml && rm -rf "$2" && ln -s evil.xml "$2" && gitq add -A && gitq commit -qm link)
+        (cd "$case_dir" && "$script" > /dev/null 2>&1) && fail "accepted a symlinked $1"
+        return 0
+    }
+    symlinked scheme Tinycast.xcodeproj/xcshareddata/xcschemes/Tinycast.xcscheme
+    symlinked pbxproj Tinycast.xcodeproj/project.pbxproj
+    symlinked yml project.yml
+    case_dir="$WORK/bi-link-dir"
+    make_inputs_repo "$case_dir"
+    (cd "$case_dir" && mkdir Elsewhere && git mv Tinycast.xcodeproj/project.pbxproj Elsewhere/project.pbxproj && rm -rf Tinycast.xcodeproj && ln -s Elsewhere Tinycast.xcodeproj && gitq add -A && gitq commit -qm dirlink)
+    (cd "$case_dir" && "$script" > /dev/null 2>&1) && fail "accepted a symlinked project folder"
+    # A symlink elsewhere in the tree is none of this check's business.
+    case_dir="$WORK/bi-link-ok"
+    make_inputs_repo "$case_dir"
+    (cd "$case_dir" && ln -s Scripts docs-link && gitq add -A && gitq commit -qm ok)
+    (cd "$case_dir" && "$script" > /dev/null 2>&1) || fail "refused an unrelated symlink"
+
     # A path that differs only by case lands on the same file on a Mac. It must be refused, also
     # when only the path check is asked for.
     case_dir="$WORK/bi-case"
@@ -1114,6 +1162,17 @@ test_gate_tests() {
     assert_contains "$out" "UpdatesTests"
     assert_contains "$out" "UpdateCheckTests"
     assert_lacks "$out" "calc-test"
+    # Registrations may carry the runner's prefixes: slow, -O and index. The name is what follows them,
+    # and an index-only harness cannot be run by name, so it is never selected.
+    write_registry file-search-path-test file-search-fragment-test fork-update-test
+    printf 'run slow -O updates-test   Tinycast/X.swift\nrun -O UpdateCheckTests Tinycast/X.swift\nrun index update-bench Tinycast/X.swift\nrun slow fuzz-test Tinycast/X.swift\n' >> "$d/Scripts/run-tests.sh"
+    out="$(cd "$d" && ./Scripts/fork-gate-tests.sh --list)" || fail "--list failed with prefixed registrations: $out"
+    assert_contains "$out" "updates-test"
+    assert_contains "$out" "UpdateCheckTests"
+    assert_lacks "$out" "update-bench"
+    assert_lacks "$out" "-O"
+    assert_lacks "$out" "slow"
+    assert_lacks "$out" "fuzz-test"
     # A fork-owned registration lost in a merge is an error, never a quiet pass.
     write_registry file-search-path-test fork-update-test updates-test
     out="$(cd "$d" && ./Scripts/fork-gate-tests.sh --list 2>&1)" && fail "a missing fork-owned harness was accepted"
@@ -1126,6 +1185,53 @@ test_gate_tests() {
     rm -f "$d/Scripts/ran.log"
     (cd "$d" && FAIL_ON=fork-update-test ./Scripts/fork-gate-tests.sh > /dev/null 2>&1) && fail "a failing harness was accepted"
     [ "$(wc -l < "$d/Scripts/ran.log" | tr -d ' ')" = 4 ] || fail "it stopped at the first failure instead of running every harness"
+    return 0
+}
+
+# The decision compares with the last release that was really published, not with the highest tag.
+test_last_release() {
+    local script="$ROOT/Scripts/fork-last-release.sh" out
+    [ -x "$script" ] || {
+        fail "Scripts/fork-last-release.sh is missing or not executable"
+        return
+    }
+    rel() { # TAG DRAFT PRERELEASE [ASSET...]
+        local tag="$1" draft="$2" pre="$3" assets="" a
+        shift 3
+        for a in "$@"; do assets="$assets${assets:+,}{\"name\":\"$a\"}"; done
+        printf '{"tag_name":"%s","draft":%s,"prerelease":%s,"assets":[%s]}' "$tag" "$draft" "$pre" "$assets"
+    }
+    full() { # VERSION: both assets of a complete release
+        echo "Tinycast-Fork-$1.zip Tinycast-Fork-$1.zip.sha256"
+    }
+    local good2 good3
+    # shellcheck disable=SC2046 # the asset names are separate arguments
+    good2="$(rel v0.12.11-fork.2 false false $(full 0.12.11-fork.2))"
+    # shellcheck disable=SC2046
+    good3="$(rel v0.12.11-fork.3 false false $(full 0.12.11-fork.3))"
+    out="$(printf '[%s,%s]' "$good2" "$good3" | "$script")" || fail "a plain list failed"
+    [ "$out" = v0.12.11-fork.3 ] || fail "the highest complete release should win, got: $out"
+    out="$(printf '[%s,%s]' "$good3" "$good2" | "$script")"
+    [ "$out" = v0.12.11-fork.3 ] || fail "the order of the list must not matter, got: $out"
+    # 10 is above 9: versions are compared as numbers.
+    # shellcheck disable=SC2046
+    out="$(printf '[%s,%s]' "$(rel v0.12.11-fork.9 false false $(full 0.12.11-fork.9))" "$(rel v0.12.11-fork.10 false false $(full 0.12.11-fork.10))" | "$script")"
+    [ "$out" = v0.12.11-fork.10 ] || fail "fork.10 is above fork.9, got: $out"
+    # A draft, a prerelease, a release missing an asset, and a tag of another shape are all passed over.
+    # shellcheck disable=SC2046
+    out="$(printf '[%s,%s,%s,%s,%s,%s]' "$good2" \
+        "$(rel v0.12.11-fork.3 true false $(full 0.12.11-fork.3))" \
+        "$(rel v0.12.11-fork.4 false true $(full 0.12.11-fork.4))" \
+        "$(rel v0.12.11-fork.5 false false Tinycast-Fork-0.12.11-fork.5.zip)" \
+        "$(rel v0.12.11-fork.6 false false Tinycast-Fork-0.12.11-fork.6.zip.sha256)" \
+        "$(rel v0.12.12 false false Tinycast-Fork-0.12.12.zip Tinycast-Fork-0.12.12.zip.sha256)" | "$script")"
+    [ "$out" = v0.12.11-fork.2 ] || fail "only a complete published fork release counts, got: $out"
+    # The assets must belong to that tag.
+    out="$(printf '[%s,%s]' "$good2" "$(rel v0.12.11-fork.7 false false Tinycast-Fork-0.12.11-fork.2.zip Tinycast-Fork-0.12.11-fork.2.zip.sha256)" | "$script")"
+    [ "$out" = v0.12.11-fork.2 ] || fail "another release's assets do not complete a tag, got: $out"
+    # No complete release is an error, never an empty answer.
+    echo '[]' | "$script" > /dev/null 2>&1 && fail "an empty list was accepted"
+    echo 'not json' | "$script" > /dev/null 2>&1 && fail "bad input was accepted"
     return 0
 }
 
@@ -1295,6 +1401,8 @@ test_sync_workflow_static() {
 
     assert_contains "$release" "fork-next-version.sh"
     assert_contains "$release" "fork-sync-decide.sh"
+    assert_contains "$release" "fork-last-release.sh"
+    assert_lacks "$release" "git tag -l 'v*-fork.*' | sort -V"
     assert_contains "$release" "expected_sha"
     assert_contains "$release" "gh run watch"
     assert_contains "$release" "actions: write"
@@ -1328,7 +1436,7 @@ ALL=(validate_accepts validate_rejects build_print_settings import_requires_env 
     bootstrap_dry_run bootstrap_environments_calls bootstrap_rulesets bootstrap_identity_calls bootstrap_tap_calls
     bootstrap_refuses_overwrite bootstrap_no_leftovers bootstrap_rejects_bad_args
     workflow_static update_path
-    build_inputs check_readme gate_tests next_version sync_merge sync_verify_tree sync_decide sync_workflow_static)
+    build_inputs check_readme gate_tests last_release next_version sync_merge sync_verify_tree sync_decide sync_workflow_static)
 
 if [ $# -gt 0 ]; then
     names=("$@")
