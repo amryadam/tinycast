@@ -5,9 +5,10 @@
 #
 # Prints one word:
 #   skip     nothing changed since the tag outside website/ and docs/
-#   hold     something changed, but a commit since the tag was resolved by Claude (it carries the
-#            trailer `Resolved-by: claude`), so a person should look before the release
-#   release  something changed, and no commit since the tag was resolved by Claude
+#   hold     something changed, but a commit since the tag was resolved by Claude (trailer
+#            `Resolved-by: claude`) or Claude's review of a merge had concerns (trailer
+#            `Review-concerns: claude`), so a person should look before the release
+#   release  something changed, and no commit since the tag carries either trailer
 # A missing tag is an error, never a silent skip.
 
 set -euo pipefail
@@ -48,7 +49,7 @@ fi
 
 # grep reads from a process substitution, not a pipe: grep -q stops at the first match, and under
 # pipefail git's resulting SIGPIPE would turn a match into "no match", releasing a held merge.
-if grep -qx 'claude' < <(git log --format='%(trailers:key=Resolved-by,valueonly,separator=%x0a)' "$tag..$dev"); then
+if grep -qx 'claude' < <(git log --format='%(trailers:key=Resolved-by,key=Review-concerns,valueonly,separator=%x0a)' "$tag..$dev"); then
     echo hold
 else
     echo release

@@ -1251,6 +1251,21 @@ test_sync_decide() {
     [ "$(decide)" = release ] || fail "an app change should be release"
     (cd "$d" && gitq commit --allow-empty -qm "Merge" -m "Resolved-by: claude")
     [ "$(decide)" = hold ] || fail "a Claude-resolved merge should be hold"
+    # A merge Claude's review had concerns about is held too, with its own trailer.
+    make_sync_repo "$d-rv"
+    (cd "$d-rv" && gitq checkout -q dev && gitq tag last)
+    on_branch "$d-rv" dev bash -c 'echo x >> Tinycast/Core.swift'
+    [ "$(cd "$d-rv" && "$script" last dev)" = release ] || fail "an app change with no trailer should be release"
+    (cd "$d-rv" && gitq commit --allow-empty -qm "Merge upstream into dev" -m "Review-concerns: claude")
+    [ "$(cd "$d-rv" && "$script" last dev)" = hold ] || fail "a merge with review concerns should be hold"
+    # Only these two trailers hold, and only with the value claude.
+    make_sync_repo "$d-rv2"
+    (cd "$d-rv2" && gitq checkout -q dev && gitq tag last)
+    on_branch "$d-rv2" dev bash -c 'echo x >> Tinycast/Core.swift'
+    (cd "$d-rv2" && gitq commit --allow-empty -qm "Merge" -m "Review-concerns: none")
+    [ "$(cd "$d-rv2" && "$script" last dev)" = release ] || fail "another value must not hold"
+    (cd "$d-rv2" && gitq commit --allow-empty -qm "Merge" -m "Some-other: claude")
+    [ "$(cd "$d-rv2" && "$script" last dev)" = release ] || fail "another trailer must not hold"
     # grep -q must not make git's output a failed pipe: a long trailer list is more than a pipe holds.
     make_sync_repo "$d-big"
     (cd "$d-big" && gitq checkout -q dev && gitq tag last)
@@ -1278,7 +1293,7 @@ test_sync_decide() {
 }
 
 test_sync_workflow_static() {
-    local wf="${FORK_SYNC_WORKFLOW:-$ROOT/.github/workflows/fork-sync.yml}" detect resolve verify push release notify bad
+    local wf="${FORK_SYNC_WORKFLOW:-$ROOT/.github/workflows/fork-sync.yml}" detect resolve review verify push release notify bad
     [ -f "$wf" ] || {
         fail "the workflow is missing: $wf"
         return
@@ -1291,11 +1306,12 @@ test_sync_workflow_static() {
     fi
     detect="$(job_block "$wf" detect)"
     resolve="$(job_block "$wf" resolve)"
+    review="$(job_block "$wf" review)"
     verify="$(job_block "$wf" verify)"
     push="$(job_block "$wf" push)"
     release="$(job_block "$wf" release)"
     notify="$(job_block "$wf" notify)"
-    [ -n "$detect" ] && [ -n "$resolve" ] && [ -n "$verify" ] && [ -n "$push" ] && [ -n "$release" ] && [ -n "$notify" ] || {
+    [ -n "$detect" ] && [ -n "$resolve" ] && [ -n "$review" ] && [ -n "$verify" ] && [ -n "$push" ] && [ -n "$release" ] && [ -n "$notify" ] || {
         fail "the workflow needs the jobs detect, merge, resolve, verify, push, release and notify"
         return
     }
@@ -1354,6 +1370,36 @@ test_sync_workflow_static() {
     assert_lacks "$resolve" "--dangerously"
     assert_lacks "$resolve" "--allowedTools"
 
+    # The review job reads untrusted upstream text, so it is read-only: its own token, no write
+    # access, no edit tool, no shell, and nothing of upstream's tool configuration. Its answer is
+    # a structured verdict that a trusted step reads, and anything but "ok" counts as concerns.
+    assert_contains "$review" "environment: fork-sync-claude"
+    assert_contains "$review" "contents: read"
+    assert_contains "$review" "CLAUDE_CODE_OAUTH_TOKEN"
+    assert_lacks "$review" ": write"
+    assert_lacks "$review" "SYNC_TOKEN"
+    assert_lacks "$review" "git push"
+    assert_lacks "$review" "acceptEdits"
+    assert_lacks "$review" "--dangerously"
+    assert_lacks "$review" "--allowedTools"
+    grep -Eq -- '--tools Read,Glob,Grep[[:space:]]*$' <<< "$review" || fail "the review tools must be exactly Read,Glob,Grep"
+    assert_contains "$review" "--strict-mcp-config"
+    assert_contains "$review" "--setting-sources user"
+    assert_contains "$review" "--model claude-"
+    assert_contains "$review" "--effort "
+    assert_contains "$review" "--max-turns "
+    assert_contains "$review" "--json-schema"
+    assert_contains "$review" "structured_output"
+    assert_contains "$review" ".mcp.json"
+    assert_contains "$review" "CLAUDE.md"
+    assert_contains "$review" "sync-review"
+    # Only the push job, which runs no merged code, writes the trailer, so the model cannot forge or drop it.
+    assert_contains "$push" "REVIEW_VERDICT"
+    assert_contains "$push" '--trailer "Review-concerns: claude"'
+    assert_contains "$push" "interpret-trailers"
+    assert_contains "$release" "sync-review"
+    grep -Eq 'needs: \[detect, merge, resolve, review, verify\]' <<< "$push" || fail "the push job must wait for the review"
+
     # Mirroring upstream's main would activate upstream's workflow files here.
     assert_lacks "$push" "merge-upstream"
     grep -q 'merge-upstream' "$wf" && fail "the workflow mirrors upstream's main with merge-upstream"
@@ -1365,8 +1411,8 @@ test_sync_workflow_static() {
     # Secrets stay in their own job.
     [ "$(grep -c 'SYNC_TOKEN' <<< "$push")" -ge 1 ] || fail "the push job does not use SYNC_TOKEN"
     [ "$(grep -c 'SYNC_TOKEN' "$wf")" = "$(grep -c 'SYNC_TOKEN' <<< "$push")" ] || fail "SYNC_TOKEN appears outside the push job"
-    [ "$(grep -c 'CLAUDE_CODE_OAUTH_TOKEN' "$wf")" = "$(grep -c 'CLAUDE_CODE_OAUTH_TOKEN' <<< "$resolve")" ] \
-        || fail "the Claude token appears outside the resolve job"
+    [ "$(grep -c 'CLAUDE_CODE_OAUTH_TOKEN' "$wf")" = "$(($(grep -c 'CLAUDE_CODE_OAUTH_TOKEN' <<< "$resolve") + $(grep -c 'CLAUDE_CODE_OAUTH_TOKEN' <<< "$review")))" ] \
+        || fail "the Claude token appears outside the resolve and review jobs"
     assert_lacks "$verify" "secrets."
     assert_lacks "$detect" "secrets."
     assert_contains "$push" "environment: fork-sync"
