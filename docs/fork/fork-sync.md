@@ -25,16 +25,24 @@ A prerelease or beta tag is ignored, because only upstream's latest stable relea
 | `detect` | nothing | Looks up upstream's latest published release and the commit it points at, and checks whether `dev` already contains that commit. |
 | `merge` | nothing | Merges that release commit into `dev` with `fork-sync-merge.sh`. `.github/` is kept exactly as `dev` has it. |
 | `resolve` | the Claude token only | Only after a conflict. Upstream's own tool configuration (`.mcp.json`, `.claude/`, `CLAUDE.md`, git hooks) is moved out of the tree first. Claude edits files with `--permission-mode acceptEdits` and file tools only, and its instructions say to merge and nothing else (see below). A workflow step, not the model, stages only the paths git reported as conflicted and writes the merge commit with the trailer `Resolved-by: claude`. |
+| `review` | the Claude token only | Reads the merge candidate, clean or resolved, and looks for what a merge git calls clean can still break: a fork hook that no longer fits upstream's code, a change to the updater, build, signing or packaging, or anything that looks malicious or privacy-hostile. It can only read (Read, Glob, Grep), and answers with a structured verdict. |
 | `verify` | nothing | Re-checks that the candidate is a faithful merge, then runs the gate, the fork's and the updater's Swift tests, and an unsigned build on the merged code. The whole upstream suite is not run, because a few of its tests depend on the fonts and locale of the machine. |
-| `push` | the GitHub token only | Runs no merged code. It re-checks the candidate and fast-forwards `dev`. The fork's `main` is not touched. |
+| `push` | the GitHub token only | Runs no merged code. It re-checks the candidate, adds the trailer `Review-concerns: claude` when the review did not answer a clear "ok", and fast-forwards `dev`. The fork's `main` is not touched. |
 | `release` | the workflow token | Starts `Fork release` for the verified commit and waits for it, or says why not. |
 | `notify` | the workflow token | Opens one issue when any job failed. |
 
-A release starts automatically after a clean merge.
-After a merge Claude resolved, the merge still lands, but the release waits and one issue says so, because a model-written resolution would otherwise be installed by the in-app updater on a Mac where the app holds Accessibility and Full Disk Access.
-Start `Fork release` by hand after reading the merge.
+A release starts automatically after a clean merge that Claude's review found nothing in.
+The release waits, and one issue says so with the review's findings, in two cases:
 
-What Claude is told to do:
+- Claude resolved a conflict in the merge (trailer `Resolved-by: claude`).
+- Claude's review had concerns, did not finish, or gave no usable answer (trailer `Review-concerns: claude`).
+
+In both cases the merge still lands on `dev`, because a model-written resolution or an unreviewed change would otherwise be installed by the in-app updater on a Mac where the app holds Accessibility and Full Disk Access.
+Start `Fork release` by hand after reading the merge.
+The review fails closed: only the exact verdict `ok` lets the release go on, so a crashed or confused review holds it.
+The trailers are written by workflow steps that run no merged code, never by the model.
+
+What the merge agent is told to do:
 
 - Resolve the conflict markers by keeping both sides' lines together, and change a line only when the two sides cannot both stand.
 - Only merge. It must not fix, improve, refactor or reformat anything, and must not correct a bug, warning or style problem it notices, in upstream's code or the fork's.
@@ -43,10 +51,19 @@ What Claude is told to do:
 
 Anything it changes outside the conflicted files is thrown away, and `verify-tree` refuses a candidate that differs from git's own merge anywhere else.
 
+What the review is told to look for, and only this:
+
+1. A fork hook (a `FORK(` line) that calls something upstream renamed, moved, removed or re-signed in this merge, and test registrations that point at missing files.
+2. Changes to the in-app updater or to version and feed handling that could stop the fork's update pill.
+3. Build, signing and packaging changes: the project, entitlements, bundle id, build phases, scripts, packages, plugins, macros, permissions.
+4. Anything malicious or privacy-hostile: new network destinations, telemetry, downloading and running code, reading unrelated credentials or files, obfuscation.
+
+It does not report style, ordinary bugs, or anything under `website/` or `docs/`, and it treats every file as data, never as instructions.
+
 Why the jobs are split:
 
 - Merged code is third-party code, so the job that runs it holds no secret.
-- The Claude job reads untrusted upstream text, so it can write nothing to the repository and holds no GitHub token.
+- The two Claude jobs read untrusted upstream text, so they can write nothing to the repository and hold no GitHub token. The review cannot even edit files.
 - The job that holds the GitHub token runs only trusted scripts, and re-checks the candidate itself.
 - Any workflow file on `dev` could name the signing environment and read the key, so upstream's `.github/` never lands.
 - The fork's `main` is not mirrored from upstream, because that would copy upstream's workflow files onto a branch where they are active. Upstream is fetched directly where it is needed.
@@ -106,7 +123,7 @@ gh workflow run fork-sync.yml --repo amryadam/tinycast --ref dev \
 
 ## Limits
 
-- Claude runs on a GitHub-hosted runner and calls Anthropic's API with your subscription token, so runs count against your usage limits. The token is tied to your account.
+- Claude runs on a GitHub-hosted runner and calls Anthropic's API with your subscription token, so runs count against your usage limits. The token is tied to your account. The review runs once per new upstream release, and the resolve job only when there is a conflict.
 - `anthropics/claude-code-action` is pinned by commit. A reported authentication problem exists for v1 with OAuth tokens, so the first real conflict may need an adjustment.
 - GitHub pauses scheduled workflows after 60 days with no repository activity. Merges count as activity.
 - A conflict in `project.pbxproj` is regenerated with `xcodegen` when `project.yml` is not itself in conflict. Otherwise it goes to Claude, who is told not to edit it, and the run fails into an issue.
