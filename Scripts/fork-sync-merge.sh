@@ -44,7 +44,8 @@ git merge --no-ff --no-commit "$up" > /dev/null 2>&1 || true
 
 # Pin .github/ to dev: restore what dev has (which also clears a conflict there), and remove what
 # dev lacks.
-if git ls-tree -r --name-only "$dev" -- .github | grep -q .; then
+# (A process substitution, not a pipe: under pipefail grep -q's early exit would make a listing look empty.)
+if grep -q . < <(git ls-tree -r --name-only "$dev" -- .github); then
     git checkout "$dev" -- .github
 fi
 while IFS= read -r -d '' file; do
@@ -54,7 +55,7 @@ while IFS= read -r -d '' file; do
 done < <(git ls-files -z --deduplicate -- .github)
 
 pbx=Tinycast.xcodeproj/project.pbxproj
-if unmerged | grep -qx "$pbx" && ! unmerged | grep -qx project.yml && command -v xcodegen > /dev/null; then
+if grep -qx "$pbx" < <(unmerged) && ! grep -qx project.yml < <(unmerged) && command -v xcodegen > /dev/null; then
     git checkout --theirs -- "$pbx"
     xcodegen generate > /dev/null 2>&1 || true
     git add -- "$pbx"

@@ -65,13 +65,15 @@ while IFS= read -r -d '' path; do
 done < <(git diff --name-only -z "$baseline" "$cand")
 
 # A resolved file stays a plain file: no link out of the repository and no submodule.
-if git diff --raw --no-renames "$baseline" "$cand" | awk '{ print $2 }' | grep -qE '^(120000|160000)$'; then
+# (grep reads from a process substitution: under pipefail, grep -q's early exit would otherwise
+# make a match look like no match.)
+if grep -qE '^(120000|160000)$' < <(git diff --raw --no-renames "$baseline" "$cand" | awk '{ print $2 }'); then
     die "the candidate has a symlink or a submodule where git's merge has none"
 fi
 
 # No conflict markers in anything the candidate changed.
 while IFS= read -r -d '' path; do
-    if git show "$cand:$path" 2> /dev/null | grep -qE '^(<<<<<<<|>>>>>>>) '; then
+    if grep -qE '^(<<<<<<<|>>>>>>>) ' < <(git show "$cand:$path" 2> /dev/null); then
         die "$path still has a conflict marker"
     fi
 done < <(git diff --name-only -z "$dev" "$cand")
