@@ -17,6 +17,16 @@ on:
   schedule:
     - cron: "17 5 * * *"
   workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: Rehearsal only. An upstream tag to merge instead of the latest release, for example v0.12.12-beta.139. Needs dry_run.
+        type: string
+        required: false
+        default: ""
+      dry_run:
+        description: Merge, resolve and verify, but push nothing and start no release.
+        type: boolean
+        default: false
 
 permissions: {}
 
@@ -50,11 +60,26 @@ jobs:
         id: facts
         env:
           GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ inputs.upstream_tag }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
-          TAG="$(gh api repos/abue-ammar/tinycast/releases/latest --jq .tag_name)"
-          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Upstream's latest release tag '$TAG' is not of the form vMAJOR.MINOR.PATCH."
-            exit 1
+          if [ -n "$INPUT_TAG" ]; then
+            # A rehearsal on another tag must never reach dev or a release.
+            if [ "$DRY_RUN" != true ]; then
+              echo "::error::upstream_tag is allowed only with dry_run."
+              exit 1
+            fi
+            TAG="$INPUT_TAG"
+            if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$ ]]; then
+              echo "::error::'$TAG' is not an upstream tag like v0.12.12 or v0.12.12-beta.139."
+              exit 1
+            fi
+          else
+            TAG="$(gh api repos/abue-ammar/tinycast/releases/latest --jq .tag_name)"
+            if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::Upstream's latest release tag '$TAG' is not of the form vMAJOR.MINOR.PATCH."
+              exit 1
+            fi
           fi
           git remote add upstream https://github.com/abue-ammar/tinycast.git
           git fetch --quiet upstream "refs/tags/$TAG:refs/tags/upstream-release"
@@ -331,7 +356,7 @@ jobs:
   # read the candidate through git and never execute it.
   push:
     needs: [detect, merge, resolve, verify]
-    if: ${{ !cancelled() && needs.verify.result == 'success' }}
+    if: ${{ !cancelled() && needs.verify.result == 'success' && !inputs.dry_run }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: fork-sync
@@ -381,7 +406,7 @@ jobs:
   # new upstream, so a failed release is tried again by the next scheduled run.
   release:
     needs: [detect, merge, resolve, verify, push]
-    if: ${{ !cancelled() && needs.detect.result == 'success' && !contains(needs.*.result, 'failure') }}
+    if: ${{ !cancelled() && !inputs.dry_run && needs.detect.result == 'success' && !contains(needs.*.result, 'failure') }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:

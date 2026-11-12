@@ -8,6 +8,7 @@ The plan is [fork-update-sync-plan.md](fork-update-sync-plan.md), and the in-app
 - [How a sync runs](#how-a-sync-runs)
 - [Scripts](#scripts)
 - [One-time setup](#one-time-setup)
+- [Rehearsing](#rehearsing)
 - [Limits](#limits)
 - [Files](#files)
 
@@ -84,6 +85,21 @@ gh variable set FORK_SYNC_SCHEDULE --body on --repo amryadam/tinycast
 The environments come from `./Scripts/fork-bootstrap.sh environments`, and each is limited to the branch `dev`.
 `./Scripts/fork-bootstrap.sh rulesets` protects `dev` from deletion and force pushes, and the tags `v*-fork.*` from being moved or deleted.
 It demands no pull request, because the sync pushes to `dev` directly.
+
+## Rehearsing
+
+A manual run has two inputs for trying the pipeline on real upstream data without touching `dev`.
+
+```shell
+# Merge another upstream tag, let Claude resolve any conflict, verify it, and stop.
+gh workflow run fork-sync.yml --repo amryadam/tinycast --ref dev \
+  -f upstream_tag=v0.12.12-beta.139 -f dry_run=true
+```
+
+- `dry_run` runs `detect`, `merge`, `resolve` and `verify`, and skips `push` and `release`.
+- `upstream_tag` is refused unless `dry_run` is on, so a beta merge can never reach `dev` or a release.
+- The candidate stays as the artifact `sync-candidate` for one day, so the resolution can be read.
+- If a rehearsal fails, the `notify` job opens or updates the usual failure issue.
 
 ## Limits
 
