@@ -853,6 +853,16 @@ test_sync_merge() {
     [ -z "$(cd "$d-md" && git diff --name-only "$dev" HEAD -- .github)" ] || fail ".github must still equal dev's after a modify/delete conflict"
     [ ! -e "$d-md/.github/workflows/up.yml" ] || fail "the workflow dev deleted must stay deleted"
 
+    # dev has so many workflow files that listing them fills a pipe; .github must still be pinned.
+    make_sync_repo "$d-many"
+    # shellcheck disable=SC2016 # the loop runs in the inner shell
+    on_branch "$d-many" dev bash -c 'for i in $(seq 1 1500); do echo "$i" > ".github/workflows/a-rather-long-workflow-file-name-to-fill-the-pipe-$i.yml"; done'
+    on_branch "$d-many" up bash -c 'echo edited > .github/workflows/up.yml; echo more >> Tinycast/Core.swift'
+    (cd "$d-many" && gitq checkout -q dev)
+    dev="$(cd "$d-many" && git rev-parse HEAD)"
+    (cd "$d-many" && GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t "$script" dev up > /dev/null 2>&1) || fail "the merge failed with a very long .github"
+    [ -z "$(cd "$d-many" && git diff --name-only "$dev" HEAD -- .github)" ] || fail ".github must equal dev's when dev has very many workflow files"
+
     # Already up to date.
     make_sync_repo "$d-same"
     out="$(cd "$d-same" && "$script" dev up 2>&1)"
@@ -934,6 +944,8 @@ test_sync_verify_tree() {
     bad="$(forge "$d" "$cand" "$dev" "$up" bash -c "printf 'one\nfork-up-two\nthree\n' > Tinycast/Core.swift; echo evil >> a.txt")"
     expect_bad "$bad" "a resolution that also changes another file"
     expect_bad "$cand" "the conflicted state with its markers still in"
+    bad="$(forge "$d" "$cand" "$dev" "$up" bash -c "{ printf '<<<<<<< HEAD\n'; head -c 3000000 /dev/zero | tr '\0' 'x' | fold -w 100; } > Tinycast/Core.swift")"
+    expect_bad "$bad" "a conflict marker at the top of a very large file"
     bad="$(forge "$d" "$cand" "$dev" "$up" bash -c "rm Tinycast/Core.swift; ln -s /etc/passwd Tinycast/Core.swift")"
     expect_bad "$bad" "a resolution that turns the conflicted file into a symlink"
     bad="$(forge "$d" "$cand" "$dev" "$up" bash -c "printf 'one\nx\nthree\n' > Tinycast/Core.swift; rm upstream.txt")"
@@ -1024,6 +1036,12 @@ test_build_inputs() {
     (cd "$case_dir" && "$script" > /dev/null 2>&1) && fail "accepted a case-colliding path"
     (cd "$case_dir" && "$script" --paths-only > /dev/null 2>&1) && fail "--paths-only accepted a case-colliding path"
 
+    # A match at the top of a very large file must still be found, not lost to a closed pipe.
+    case_dir="$WORK/bi-large"
+    make_inputs_repo "$case_dir"
+    (cd "$case_dir" && { echo 'isa = XCRemoteSwiftPackageReference;'; head -c 3000000 /dev/zero | tr '\0' 'x' | fold -w 100; } >> Tinycast.xcodeproj/project.pbxproj && gitq commit -qam large)
+    (cd "$case_dir" && "$script" > /dev/null 2>&1) && fail "missed a package reference at the top of a large project file"
+
     # --paths-only does not look inside the project.
     case_dir="$WORK/bi-pathsonly"
     make_inputs_repo "$case_dir"
@@ -1057,6 +1075,12 @@ test_sync_decide() {
     [ "$(decide)" = release ] || fail "an app change should be release"
     (cd "$d" && gitq commit --allow-empty -qm "Merge" -m "Resolved-by: claude")
     [ "$(decide)" = hold ] || fail "a Claude-resolved merge should be hold"
+    # grep -q must not make git's output a failed pipe: a long trailer list is more than a pipe holds.
+    make_sync_repo "$d-big"
+    (cd "$d-big" && gitq checkout -q dev && gitq tag last)
+    on_branch "$d-big" dev bash -c 'echo x >> Tinycast/Core.swift'
+    (cd "$d-big" && { printf 'Merge\n\n'; awk 'BEGIN { for (i = 0; i < 40000; i++) print "Resolved-by: claude" }'; } > "$WORK/big-msg" && gitq commit --allow-empty -qF "$WORK/big-msg")
+    [ "$(cd "$d-big" && "$script" last dev)" = hold ] || fail "a Claude-resolved merge with a very long trailer block should be hold"
     # A look-alike directory counts as code.
     make_sync_repo "$d-2"
     (cd "$d-2" && gitq checkout -q dev && gitq tag last)

@@ -25,7 +25,7 @@ remove_from_search_list() {
     while IFS= read -r line; do
         [ -n "$line" ] && [ "$line" != "$KEYCHAIN" ] && keep+=("$line")
     done < <(search_list)
-    if search_list | grep -qxF "$KEYCHAIN"; then
+    if grep -qxF "$KEYCHAIN" < <(search_list); then
         security list-keychains -d user -s ${keep[@]+"${keep[@]}"}
     fi
 }

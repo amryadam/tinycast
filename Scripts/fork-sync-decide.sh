@@ -46,7 +46,9 @@ if [ "$code" -eq 0 ]; then
     exit 0
 fi
 
-if git log --format='%(trailers:key=Resolved-by,valueonly,separator=%x0a)' "$tag..$dev" | grep -qx 'claude'; then
+# grep reads from a process substitution, not a pipe: grep -q stops at the first match, and under
+# pipefail git's resulting SIGPIPE would turn a match into "no match", releasing a held merge.
+if grep -qx 'claude' < <(git log --format='%(trailers:key=Resolved-by,valueonly,separator=%x0a)' "$tag..$dev"); then
     echo hold
 else
     echo release
