@@ -1,6 +1,6 @@
 # Feature: fork-sync
 
-Merges upstream into `dev` on a schedule, lets Claude resolve conflicts in an isolated job, verifies the result, and publishes a new release that the app offers in its update pill.
+Merges each new upstream release into `dev`, lets Claude resolve conflicts in an isolated job, verifies the result, and publishes a new release that the app offers in its update pill.
 The plan is [fork-update-sync-plan.md](fork-update-sync-plan.md), and the in-app channel is [fork-update.md](fork-update.md).
 
 ## Contents
@@ -14,10 +14,13 @@ The plan is [fork-update-sync-plan.md](fork-update-sync-plan.md), and the in-app
 ## How a sync runs
 
 The workflow `Upstream sync` runs from `dev`, daily once switched on and on demand.
+It merges upstream's latest published release, never the commits upstream makes between releases.
+On most days the check finds nothing new and stops in a few seconds.
+A prerelease or beta tag is ignored, because only upstream's latest stable release counts.
 
 | Job | Holds | Does |
 |---|---|---|
-| `detect` | nothing | Fetches upstream and checks whether `dev` already contains it. |
+| `detect` | nothing | Looks up upstream's latest published release and the commit it points at, and checks whether `dev` already contains that commit. |
 | `merge` | nothing | Merges upstream into `dev` with `fork-sync-merge.sh`. `.github/` is kept exactly as `dev` has it. |
 | `resolve` | the Claude token only | Only after a conflict. Upstream's own tool configuration (`.mcp.json`, `.claude/`, `CLAUDE.md`, git hooks) is moved out of the tree first. Claude edits files with `--permission-mode acceptEdits` and file tools only. A workflow step, not the model, stages only the paths git reported as conflicted and writes the merge commit with the trailer `Resolved-by: claude`. |
 | `verify` | nothing | Re-checks that the candidate is a faithful merge, then runs the gate, the tests and an unsigned build on the merged code. |

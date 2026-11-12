@@ -1,4 +1,5 @@
-# Merges upstream into dev, lets Claude resolve conflicts, verifies, pushes, and releases.
+# Merges each new upstream release into dev, lets Claude resolve conflicts, verifies, pushes, and
+# releases. Commits that upstream makes between releases are not merged.
 # See docs/fork/fork-sync.md and docs/fork/fork-update-sync-plan.md.
 #
 # The jobs are split by what they may touch:
@@ -34,6 +35,7 @@ jobs:
     outputs:
       dev_sha: ${{ steps.facts.outputs.dev_sha }}
       upstream_sha: ${{ steps.facts.outputs.upstream_sha }}
+      upstream_tag: ${{ steps.facts.outputs.upstream_tag }}
       has_new: ${{ steps.facts.outputs.has_new }}
     steps:
       # actions/checkout v7.0.1
@@ -42,21 +44,32 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Fetch upstream and look for news
+      # Only an upstream release is merged, never the commits between releases. The commit is the
+      # one upstream's latest published release points at.
+      - name: Find upstream's latest release
         id: facts
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          TAG="$(gh api repos/abue-ammar/tinycast/releases/latest --jq .tag_name)"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Upstream's latest release tag '$TAG' is not of the form vMAJOR.MINOR.PATCH."
+            exit 1
+          fi
           git remote add upstream https://github.com/abue-ammar/tinycast.git
-          git fetch --quiet upstream main
-          UP="$(git rev-parse upstream/main)"
+          git fetch --quiet upstream "refs/tags/$TAG:refs/tags/upstream-release"
+          UP="$(git rev-parse 'refs/tags/upstream-release^{commit}')"
           {
             echo "dev_sha=$GITHUB_SHA"
             echo "upstream_sha=$UP"
+            echo "upstream_tag=$TAG"
             if git merge-base --is-ancestor "$UP" "$GITHUB_SHA"; then
               echo "has_new=false"
             else
               echo "has_new=true"
             fi
           } >> "$GITHUB_OUTPUT"
+          echo "Upstream's latest release is $TAG at $UP."
 
   merge:
     needs: detect
@@ -86,7 +99,7 @@ jobs:
           GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
         run: |
           git remote add upstream https://github.com/abue-ammar/tinycast.git
-          git fetch --quiet upstream main
+          git fetch --quiet upstream "$UPSTREAM_SHA"
           # Regenerates project.pbxproj when it is the only conflict, as the fork rules say.
           brew install xcodegen > /dev/null
           git checkout --quiet --detach "$DEV_SHA"
@@ -160,7 +173,7 @@ jobs:
       - name: Open the conflicted merge
         run: |
           git remote add upstream https://github.com/abue-ammar/tinycast.git
-          git fetch --quiet upstream main
+          git fetch --quiet upstream "$UPSTREAM_SHA"
           git fetch --quiet "$RUNNER_TEMP/in/conflicted.bundle" refs/fork-sync/conflicted:refs/fork-sync/conflicted
           git checkout --quiet --detach refs/fork-sync/conflicted
           # The paths git itself says conflicted, computed now, before the model touches anything.
@@ -280,7 +293,7 @@ jobs:
         id: candidate
         run: |
           git remote add upstream https://github.com/abue-ammar/tinycast.git
-          git fetch --quiet upstream main
+          git fetch --quiet upstream "$UPSTREAM_SHA"
           git fetch --quiet "$RUNNER_TEMP/in/candidate.bundle" sync-candidate:refs/heads/sync-candidate
           CANDIDATE="$(git rev-parse sync-candidate)"
           # The scripts come from the trusted checkout, before any merged code is checked out.
