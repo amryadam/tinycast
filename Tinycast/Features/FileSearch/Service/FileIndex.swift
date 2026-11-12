@@ -93,10 +93,14 @@ final class FileIndex: Sendable {
         }
     }
 
-    func search(_ query: FileSearchQuery.Prepared, filter: FileSearchFilter) -> [FileSearchResult] {
+    // FORK(path-suffix): a partial path asks for more candidates, because it narrows them afterwards.
+    func search(
+        _ query: FileSearchQuery.Prepared, filter: FileSearchFilter,
+        limit: Int = FileSearchQuery.resultLimit
+    ) -> [FileSearchResult] {
         let state = state.withLock { $0 }
         guard let snapshot = state.snapshot, let policy = state.policy else { return [] }
-        let limit = FileSearchQuery.resultLimit
+        // FORK(path-suffix): `limit` is the parameter; it was a local constant here.
         let names = NameScores(count: snapshot.nameCount)
         Self.chunked(0..<snapshot.nameCount, alignment: 64) { range in
             for id in range where snapshot.nameMask[id] & query.mask == query.mask {

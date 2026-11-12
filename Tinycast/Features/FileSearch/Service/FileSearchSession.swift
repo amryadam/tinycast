@@ -39,7 +39,7 @@ final class FileSearchSession {
                 }
                 // FORK(path-suffix): a partial path is searched by its file name, then narrowed to the path.
                 if let found = FileSearchPathFragment.results(
-                    for: query, search: { index.search($0, filter: filter) })
+                    for: query, search: { index.search($0, filter: filter, limit: $1) })
                 {
                     return found
                 }

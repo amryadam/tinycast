@@ -36,19 +36,28 @@ The fork's rules are in [README.md](README.md).
 | `Tests/file-search-path-test.swift` | Edited | Unit tests for the parser, the matcher and the wrapper, added to the path-query harness. | None |
 | `Tests/file-search-fragment-test.swift` | New | A real index on disk and the real session, asked with partial paths. | None |
 | `Tinycast/Features/FileSearch/Service/FileSearchSession.swift` | Edited | One marked hunk in the default search operation. | Low |
+| `Tinycast/Features/FileSearch/Service/FileIndex.swift` | Edited | `search` takes a `limit`, defaulting to the ordinary 200, so a partial path can ask for more candidates. | Low |
 | `Scripts/run-tests.sh` | Edited | Registers `file-search-fragment-test`, two lines after `file-search-path-test`. | Low |
 | `Tinycast.xcodeproj/project.pbxproj` | Regenerated | Four lines for the new source. Resolve a conflict by regenerating. | Medium |
 | `docs/fork/path-suffix.md` | New | This file. | None |
 
-## Hook in upstream code
+## Hooks in upstream code
 
 ```swift
 // FORK(path-suffix): a partial path is searched by its file name, then narrowed to the path.
 if let found = FileSearchPathFragment.results(
-    for: query, search: { index.search($0, filter: filter) })
+    for: query, search: { index.search($0, filter: filter, limit: $1) })
 {
     return found
 }
+```
+
+```swift
+// FORK(path-suffix): a partial path asks for more candidates, because it narrows them afterwards.
+func search(
+    _ query: FileSearchQuery.Prepared, filter: FileSearchFilter,
+    limit: Int = FileSearchQuery.resultLimit
+) -> [FileSearchResult]
 ```
 
 ```shell
@@ -69,7 +78,7 @@ export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 
 | Item | Note |
 |---|---|
-| Very common file names | The index keeps its best 200 name matches before the path is checked. A name that exists in more than 200 places, such as `index.ts`, can miss a file. |
+| Extremely common file names | A partial path fetches up to 20,000 name matches before the path is checked, so a name in a few hundred places still finds the typed path. A name in more than 20,000 places can miss. |
 | Middle of a path | The match is anchored at the end. `Features/Updates` alone, without the file, finds a folder only when it ends the query. |
 | `a/` and `b/` prefixes | A path copied from a git diff keeps its `a/` or `b/`, which is then a folder that does not exist. |
 | Search Files from the launcher | The fallback row seeds the screen with the query, which then searches the same way. Not checked by hand. |
@@ -78,5 +87,5 @@ export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 ## Removing it
 
 1. Revert the feature's merge commit on `dev`, or delete the new files listed above.
-2. Undo the two marked edits.
+2. Undo the marked edits.
 3. Run `xcodegen generate` so the project file drops the new source.
