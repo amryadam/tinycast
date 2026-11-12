@@ -342,10 +342,7 @@ jobs:
           git checkout --quiet --detach "$CANDIDATE"
           FORK_BASE="$UPSTREAM_SHA" ./Scripts/fork-check.sh
           ./Scripts/fork-test.sh
-          ./Scripts/run-tests.sh file-search-path-test
-          ./Scripts/run-tests.sh fork-update-test
-          ./Scripts/run-tests.sh updates-test
-          ./Scripts/run-tests.sh update-check-test
+          ./Scripts/fork-gate-tests.sh
 
       - name: Build the app, unsigned
         run: |

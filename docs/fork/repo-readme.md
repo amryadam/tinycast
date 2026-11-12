@@ -25,4 +25,4 @@ When upstream changes its README, keep upstream's text and re-apply these hunks.
 | File | Change | Purpose | Conflict risk |
 |---|---|---|---|
 | `docs/fork/repo-readme.md` | New | This file. | None |
-| `README.md` | Edit | The badges, contact line and install section above. | Medium: upstream edits its README |
+| `README.md` | Edit | The badges, contact line, install section and the table of the fork's features above. | Medium: upstream edits its README |
