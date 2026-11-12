@@ -1134,6 +1134,14 @@ test_sync_workflow_static() {
     grep -q 'concurrency:' "$wf" || fail "no concurrency group"
     assert_contains "$detect" "vars.FORK_SYNC_SCHEDULE == 'on'"
     assert_contains "$detect" "github.ref == 'refs/heads/dev'"
+    # A rehearsal may name another upstream tag, but only as a dry run, which never pushes or releases.
+    grep -q 'upstream_tag:' "$wf" || fail "the workflow has no upstream_tag input for rehearsals"
+    grep -q 'dry_run:' "$wf" || fail "the workflow has no dry_run input"
+    assert_contains "$detect" "INPUT_TAG"
+    assert_contains "$detect" "DRY_RUN"
+    assert_contains "$detect" "only with dry_run"
+    assert_contains "$push" "!inputs.dry_run"
+    assert_contains "$release" "!inputs.dry_run"
     # Only an upstream release is merged, never the commits between releases.
     assert_contains "$detect" "releases/latest"
     grep -Eq 'git fetch (--quiet )?upstream main' "$wf" && fail "the workflow fetches upstream's main, so it would merge unreleased commits"
