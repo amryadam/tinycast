@@ -1110,6 +1110,10 @@ test_sync_workflow_static() {
     grep -q 'concurrency:' "$wf" || fail "no concurrency group"
     assert_contains "$detect" "vars.FORK_SYNC_SCHEDULE == 'on'"
     assert_contains "$detect" "github.ref == 'refs/heads/dev'"
+    # Only an upstream release is merged, never the commits between releases.
+    assert_contains "$detect" "releases/latest"
+    grep -Eq 'git fetch (--quiet )?upstream main' "$wf" && fail "the workflow fetches upstream's main, so it would merge unreleased commits"
+    grep -q 'upstream/main' "$wf" && fail "the workflow reads upstream/main, so it would merge unreleased commits"
 
     # The Claude job: only its own token, no write access, file tools only, a model and an effort.
     assert_contains "$resolve" "environment: fork-sync-claude"
