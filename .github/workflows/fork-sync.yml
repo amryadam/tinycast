@@ -354,8 +354,8 @@ jobs:
           github_token: ${{ github.token }}
           prompt: |
             This working tree is the result of merging a new release of the upstream Tinycast project into a
-            personal fork. Git merged it without a conflict. Your job is to find what could still break or
-            go wrong that a textual merge cannot see. You can only read; you cannot change anything.
+            personal fork. Git merged it, and any conflict was already resolved. Your job is to find what could
+            still break or go wrong that a textual merge cannot see. You can only read; you cannot change anything.
             Read docs/fork/README.md first: it explains the fork's rules. Marked lines (FORK() are the
             fork's own changes inside upstream files.
             Material, all under .review-material/:
