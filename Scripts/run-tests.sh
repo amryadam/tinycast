@@ -121,6 +121,8 @@ FILE_INDEX="$FS/Service/FileIndex.swift $FS/Service/FileIndexSnapshot.swift $FS/
 run file-search-test       $FS/Model/*.swift
 # FORK(path-query)
 run file-search-path-test  $FS/Model/*.swift $FS/Service/FileSearchPathLookup.swift
+# FORK(path-suffix)
+run file-search-fragment-test $FS/Model/*.swift $FS/Service/FileSearchSession.swift $FILE_INDEX
 run file-index-test        $FS/Model/*.swift $FILE_INDEX
 run file-search-session-test $FS/Model/*.swift $FS/Service/FileSearchSession.swift $FILE_INDEX
 run menu-search-test       $L/SearchRelevance.swift \

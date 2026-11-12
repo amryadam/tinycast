@@ -37,6 +37,12 @@ final class FileSearchSession {
                 guard let prepared = FileSearchQuery.prepare(query) else {
                     return index.recent(filter: filter)
                 }
+                // FORK(path-suffix): a partial path is searched by its file name, then narrowed to the path.
+                if let found = FileSearchPathFragment.results(
+                    for: query, search: { index.search($0, filter: filter) })
+                {
+                    return found
+                }
                 return index.search(prepared, filter: filter)
             }.value
         }

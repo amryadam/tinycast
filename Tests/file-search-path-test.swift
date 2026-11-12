@@ -32,6 +32,9 @@ struct FileSearchPathTests {
         existence()
         lookup()
         leading()
+        fragments()
+        fragmentMatching()
+        fragmentSearch()
 
         print(failures == 0 ? "File search path tests passed" : "\(failures) file search path tests failed")
         exit(failures == 0 ? 0 : 1)
@@ -185,6 +188,97 @@ struct FileSearchPathTests {
         expect(
             FileSearchPathQuery.leading(pasted, before: [a, b], limit: 1) == [pasted],
             "a limit of one keeps it")
+    }
+
+    // MARK: - Partial paths
+
+    static func fragment(_ query: String) -> FileSearchPathFragment.Fragment? {
+        FileSearchPathFragment.parse(query)
+    }
+
+    static func fragments() {
+        let full = fragment("dev/Tinycast/Features/Updates/UI/UpdatePill.swift")
+        expect(full?.folders == ["dev", "tinycast", "features", "updates", "ui"], "the folders are kept in order")
+        expect(full?.name == "UpdatePill.swift", "the file name is kept as typed")
+        expect(fragment("UI/UpdatePill.swift")?.folders == ["ui"], "two parts are enough")
+        expect(fragment("UpdatePill.swift") == nil, "a bare name is no partial path")
+        expect(fragment("dev/") == nil, "one folder alone is no partial path")
+        expect(fragment("/Users/test/a/b.txt") == nil, "an absolute path is the pasted-path feature's")
+        expect(fragment("~/a/b.txt") == nil, "a home path is the pasted-path feature's")
+        expect(fragment("file:///a/b.txt") == nil, "a file URL is the pasted-path feature's")
+        expect(fragment("../a/b.txt") == nil, "a parent step names nothing")
+        expect(fragment("a/../b/c.txt") == nil, "a parent step in the middle names nothing")
+        expect(fragment("./a/b.txt")?.folders == ["a"], "a leading ./ is dropped")
+        expect(fragment("a//b.txt")?.folders == ["a"], "a doubled slash is one slash")
+        expect(fragment("a/b.txt/")?.name == "b.txt", "a trailing slash is dropped")
+        expect(fragment("  a/b.txt \n")?.name == "b.txt", "surrounding space is dropped")
+        expect(fragment("\"a/b.txt\"")?.name == "b.txt", "one pair of quotes is dropped")
+        expect(fragment("a/xy") == nil, "a name under the launcher's minimum is too short to search")
+        expect(fragment("My Folder/My File.txt")?.folders == ["my folder"], "spaces stay inside a part")
+        expect(fragment("Docs/Résumé.pdf")?.name == "Résumé.pdf", "accents are kept as typed")
+    }
+
+    static func path(_ text: String) -> FileSearchResult {
+        FileSearchResult(url: URL(filePath: text), isDirectory: false, homeDirectory: URL(filePath: home))
+    }
+
+    static func fragmentMatching() {
+        let query = "dev/Tinycast/Features/Updates/UI/UpdatePill.swift"
+        let target = "/Users/test/Github/tinycast-worktrees/dev/Tinycast/Features/Updates/UI/UpdatePill.swift"
+        func matches(_ file: String, _ query: String = query) -> Bool {
+            guard let fragment = fragment(query) else { return false }
+            return FileSearchPathFragment.matches(file, fragment)
+        }
+        expect(matches(target), "the end of the path matches")
+        expect(
+            !matches("/Users/test/Github/tinycast-worktrees/fork-sync/Tinycast/Features/Updates/UI/UpdatePill.swift"),
+            "the same file under another folder does not match")
+        expect(matches(target.uppercased()), "case does not matter")
+        expect(
+            matches("/Users/test/Github/tinycast-worktrees/dev/tinycast/features/updates/ui/updatepill.swift"),
+            "case does not matter in the folders either")
+        expect(
+            !matches("/x/dev/Tinycast/Features/Update/UI/UpdatePill.swift"), "a folder must match whole, not in part")
+        expect(
+            !matches("/x/dev/Tinycast/Features/Updates/xUI/UpdatePill.swift"), "a folder may not merely end alike")
+        expect(!matches("/Tinycast/Features/Updates/UI/UpdatePill.swift"), "a path shorter than the query cannot match")
+        expect(
+            matches("/x/dev/Tinycast/Features/Updates/UI/OldUpdatePill.swift"),
+            "a file name that merely contains the typed one still matches")
+        expect(
+            !matches("/x/dev/Tinycast/Features/Updates/UI/UpdatePillTests.swift"),
+            "a name that does not contain the typed one does not")
+        expect(matches(target, "UI/UpdatePill.swift"), "a shorter tail matches the same file")
+        expect(matches(target, "ui/updatepill"), "a half-typed name matches")
+        expect(!matches(target, "Updates/UpdatePill.swift"), "a gap in the folders does not match")
+        expect(
+            matches("/Users/test/Résumé/Docs/a.pdf", "resume/Docs/a.pdf"), "accents do not matter in a folder")
+    }
+
+    static func fragmentSearch() {
+        let hit = path("/x/dev/Tinycast/UI/UpdatePill.swift")
+        let other = path("/x/fork-sync/Tinycast/UI/UpdatePill.swift")
+        let plain = path("/x/UpdatePill.swift")
+        var asked: [[String]] = []
+        let found = FileSearchPathFragment.results(for: "dev/Tinycast/UI/UpdatePill.swift") { prepared in
+            asked.append(prepared.terms.map { String(decoding: $0, as: UTF8.self) })
+            return [other, hit, plain]
+        }
+        expect(found == [hit], "only the file under the typed path is kept")
+        expect(asked == [["updatepill.swift"]], "the search is for the file name alone, asked once")
+
+        var calls = 0
+        let ordinary = FileSearchPathFragment.results(for: "UpdatePill") { _ in
+            calls += 1
+            return [hit]
+        }
+        expect(ordinary == nil, "ordinary text is left to the ordinary search")
+        expect(calls == 0, "and asks the index nothing")
+
+        let none = FileSearchPathFragment.results(for: "dev/Nothing/UpdatePill.swift") { _ in [hit, other] }
+        expect(none == [], "a partial path that fits nothing finds nothing, rather than falling back")
+        let order = FileSearchPathFragment.results(for: "Tinycast/UI/UpdatePill.swift") { _ in [other, hit] }
+        expect(order == [other, hit], "the index's order is kept")
     }
 
     static func existence() {
