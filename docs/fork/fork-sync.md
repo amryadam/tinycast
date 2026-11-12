@@ -24,7 +24,7 @@ A prerelease or beta tag is ignored, because only upstream's latest stable relea
 | `detect` | nothing | Looks up upstream's latest published release and the commit it points at, and checks whether `dev` already contains that commit. |
 | `merge` | nothing | Merges that release commit into `dev` with `fork-sync-merge.sh`. `.github/` is kept exactly as `dev` has it. |
 | `resolve` | the Claude token only | Only after a conflict. Upstream's own tool configuration (`.mcp.json`, `.claude/`, `CLAUDE.md`, git hooks) is moved out of the tree first. Claude edits files with `--permission-mode acceptEdits` and file tools only, and its instructions say to merge and nothing else (see below). A workflow step, not the model, stages only the paths git reported as conflicted and writes the merge commit with the trailer `Resolved-by: claude`. |
-| `verify` | nothing | Re-checks that the candidate is a faithful merge, then runs the gate, the tests and an unsigned build on the merged code. |
+| `verify` | nothing | Re-checks that the candidate is a faithful merge, then runs the gate, the fork's and the updater's Swift tests, and an unsigned build on the merged code. The whole upstream suite is not run, because a few of its tests depend on the fonts and locale of the machine. |
 | `push` | the GitHub token only | Runs no merged code. It re-checks the candidate and fast-forwards `dev`. The fork's `main` is not touched. |
 | `release` | the workflow token | Starts `Fork release` for the verified commit and waits for it, or says why not. |
 | `notify` | the workflow token | Opens one issue when any job failed. |
@@ -59,6 +59,7 @@ Why the jobs are split:
 | `Scripts/fork-sync-merge.sh` | Merges upstream into `dev`, keeps `.github/` exactly as `dev` has it, and saves a conflicted merge for resolution. |
 | `Scripts/fork-sync-verify-tree.sh` | Refuses any candidate merge that is not exactly what git computes, apart from the conflicted files. |
 | `Scripts/fork-sync-decide.sh` | Says `skip`, `hold` or `release` for the changes since the last fork tag. |
+| `Scripts/fork-gate-tests.sh` | Runs the fork's own Swift harnesses and upstream's update harnesses, found by name so an upstream rename needs no change. A fork harness missing from the registry is an error. |
 | `Scripts/fork-check-build-inputs.sh` | Refuses a tree that could run code of its own during a build, or holds paths that differ only by case. |
 
 ## One-time setup
@@ -120,4 +121,5 @@ gh workflow run fork-sync.yml --repo amryadam/tinycast --ref dev \
 | `Scripts/fork-sync-verify-tree.sh` | New | See the table above. | None |
 | `Scripts/fork-sync-decide.sh` | New | See the table above. | None |
 | `Scripts/fork-check-build-inputs.sh` | New | See the table above. | None |
+| `Scripts/fork-gate-tests.sh` | New | See the table above. | None |
 | `.github/workflows/fork-sync.yml` | New | The `Upstream sync` workflow described above. | None |

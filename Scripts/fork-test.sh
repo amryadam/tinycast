@@ -606,10 +606,12 @@ test_workflow_static() {
     assert_lacks "$gate" "environment:"
     assert_lacks "$gate" ": write"
     assert_contains "$gate" "fork-check.sh"
-    assert_contains "$gate" "run-tests.sh"
+    assert_contains "$gate" "fork-gate-tests.sh"
+    assert_lacks "$gate" "updates-test"
     assert_contains "$gate" "FORK_BASE: upstream/main"
     assert_contains "$build" "needs: gate"
     assert_lacks "$build" "run-tests.sh"
+    assert_lacks "$build" "fork-gate-tests.sh"
     assert_lacks "$build" "fork-check.sh"
     assert_lacks "$build" "fork-test.sh"
     # The fork's own main is not kept in step with upstream: nothing may read origin/main.
@@ -1059,6 +1061,74 @@ test_build_inputs() {
     return 0
 }
 
+# fork-check demands that the root README link every feature doc, so a new feature cannot be left out.
+test_check_readme() {
+    local d="$WORK/ck" out
+    mkdir -p "$d/Scripts" "$d/docs/fork" && cp "$ROOT/Scripts/fork-check.sh" "$d/Scripts/"
+    (cd "$d" && gitq init -q && echo "# T" > README.md && echo a > a.txt && gitq add -A && gitq commit -qm base \
+        && gitq update-ref refs/remotes/upstream/main HEAD)
+    # shellcheck disable=SC2016 # literal backticks are wanted in the markdown
+    feature_doc() { # NAME: a feature doc that lists itself and README.md
+        printf '# Feature: %s\n\n| File | Change | Purpose | Conflict risk |\n|---|---|---|---|\n| `docs/fork/%s.md` | New | x | None |\n| `README.md` | Edited | x | None |\n' "$1" "$1" > "$d/docs/fork/$1.md"
+    }
+    feature_doc foo
+    printf '# T\n\nA line. <!-- FORK(foo) -->\n' > "$d/README.md"
+    out="$(cd "$d" && FORK_BASE=upstream/main ./Scripts/fork-check.sh 2>&1)" && fail "a feature the README does not link was accepted"
+    assert_contains "$out" "docs/fork/foo.md"
+    assert_contains "$out" "README.md does not link"
+    printf '# T\n\n- [foo](docs/fork/foo.md) <!-- FORK(foo) -->\n' > "$d/README.md"
+    out="$(cd "$d" && FORK_BASE=upstream/main ./Scripts/fork-check.sh 2>&1)" || fail "a linked feature was refused: $out"
+    # The README's own doc is exempt, and a doc that is not a feature needs no link.
+    feature_doc repo-readme
+    # shellcheck disable=SC2016 # literal backticks are wanted in the markdown
+    printf '# Notes\n\n| File |\n|---|\n| `docs/fork/notes.md` |\n' > "$d/docs/fork/notes.md"
+    out="$(cd "$d" && FORK_BASE=upstream/main ./Scripts/fork-check.sh 2>&1)" || fail "repo-readme or a plain doc was refused: $out"
+    return 0
+}
+
+# The gate runs the fork's own harnesses and upstream's update harnesses by whatever names they have now.
+test_gate_tests() {
+    local script="$ROOT/Scripts/fork-gate-tests.sh" d="$WORK/gt" out
+    [ -x "$script" ] || {
+        fail "Scripts/fork-gate-tests.sh is missing or not executable"
+        return
+    }
+    mkdir -p "$d/Scripts" && cp "$script" "$d/Scripts/"
+    # A run-tests.sh stub: given a name it logs it and fails for $FAIL_ON; its `run` lines are the registry.
+    write_registry() { # NAME...
+        {
+            echo '#!/bin/bash'
+            # shellcheck disable=SC2016 # the stub's own text, expanded when it runs
+            echo 'if [ $# -gt 0 ]; then echo "ran $1" >> "$(dirname "$0")/ran.log"; [ "$1" != "${FAIL_ON:-}" ]; exit; fi'
+            for n in "$@"; do printf 'run %-25s Tinycast/X.swift\n' "$n"; done
+        } > "$d/Scripts/run-tests.sh"
+        chmod +x "$d/Scripts/run-tests.sh"
+    }
+    write_registry file-search-path-test file-search-fragment-test fork-update-test updates-test update-check-test calc-test
+    out="$(cd "$d" && ./Scripts/fork-gate-tests.sh --list)" || fail "--list failed: $out"
+    [ "$out" = "$(printf 'file-search-path-test\nfile-search-fragment-test\nfork-update-test\nupdates-test\nupdate-check-test')" ] \
+        || fail "the list is wrong: $out"
+    # Upstream renames its update harnesses: the new names are found without a change here.
+    write_registry file-search-path-test file-search-fragment-test fork-update-test UpdatesTests UpdateCheckTests calc-test
+    out="$(cd "$d" && ./Scripts/fork-gate-tests.sh --list)" || fail "--list failed after a rename: $out"
+    assert_contains "$out" "UpdatesTests"
+    assert_contains "$out" "UpdateCheckTests"
+    assert_lacks "$out" "calc-test"
+    # A fork-owned registration lost in a merge is an error, never a quiet pass.
+    write_registry file-search-path-test fork-update-test updates-test
+    out="$(cd "$d" && ./Scripts/fork-gate-tests.sh --list 2>&1)" && fail "a missing fork-owned harness was accepted"
+    assert_contains "$out" "file-search-fragment-test"
+    # It runs what it lists, keeps going after a failure, and fails when one fails.
+    write_registry file-search-path-test file-search-fragment-test fork-update-test updates-test
+    rm -f "$d/Scripts/ran.log"
+    (cd "$d" && ./Scripts/fork-gate-tests.sh > /dev/null 2>&1) || fail "a passing gate failed"
+    [ "$(wc -l < "$d/Scripts/ran.log" | tr -d ' ')" = 4 ] || fail "it did not run all four harnesses"
+    rm -f "$d/Scripts/ran.log"
+    (cd "$d" && FAIL_ON=fork-update-test ./Scripts/fork-gate-tests.sh > /dev/null 2>&1) && fail "a failing harness was accepted"
+    [ "$(wc -l < "$d/Scripts/ran.log" | tr -d ' ')" = 4 ] || fail "it stopped at the first failure instead of running every harness"
+    return 0
+}
+
 test_sync_decide() {
     local script="$ROOT/Scripts/fork-sync-decide.sh" d="$WORK/sd"
     [ -x "$script" ] || {
@@ -1201,7 +1271,9 @@ test_sync_workflow_static() {
     assert_lacks "$verify" "git push"
     assert_lacks "$verify" "gh api -X"
     assert_lacks "$verify" "environment:"
-    for forbidden in xcodebuild run-tests.sh fork-test.sh fork-check.sh "bash -c"; do
+    assert_contains "$verify" "fork-gate-tests.sh"
+    assert_lacks "$verify" "updates-test"
+    for forbidden in xcodebuild run-tests.sh fork-gate-tests.sh fork-test.sh fork-check.sh "bash -c"; do
         assert_lacks "$push" "$forbidden"
     done
     assert_contains "$push" "fork-sync-verify-tree.sh"
@@ -1256,7 +1328,7 @@ ALL=(validate_accepts validate_rejects build_print_settings import_requires_env 
     bootstrap_dry_run bootstrap_environments_calls bootstrap_rulesets bootstrap_identity_calls bootstrap_tap_calls
     bootstrap_refuses_overwrite bootstrap_no_leftovers bootstrap_rejects_bad_args
     workflow_static update_path
-    build_inputs next_version sync_merge sync_verify_tree sync_decide sync_workflow_static)
+    build_inputs check_readme gate_tests next_version sync_merge sync_verify_tree sync_decide sync_workflow_static)
 
 if [ $# -gt 0 ]; then
     names=("$@")

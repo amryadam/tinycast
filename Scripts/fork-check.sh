@@ -56,6 +56,17 @@ while IFS= read -r file; do
     fi
 done <<< "$listed"
 
+# Every feature doc (a title `# Feature: name`) must be linked from the root README, so a feature
+# cannot be added and left out of it. The README's own doc, repo-readme, is the one exception.
+for doc in docs/fork/*.md; do
+    [ "$(basename "$doc")" = "repo-readme.md" ] && continue
+    grep -q '^# Feature:' "$doc" || continue
+    if ! grep -qF "($doc)" README.md 2> /dev/null; then
+        echo "NOREADME  $doc  (a feature, but README.md does not link it)"
+        status=1
+    fi
+done
+
 # Every hunk of an upstream file we edit must be findable by `grep FORK(`.
 while IFS= read -r file; do
     [ -z "$file" ] && continue

@@ -83,10 +83,7 @@ jobs:
         run: |
           ./Scripts/fork-check.sh
           ./Scripts/fork-test.sh
-          ./Scripts/run-tests.sh file-search-path-test
-          ./Scripts/run-tests.sh fork-update-test
-          ./Scripts/run-tests.sh updates-test
-          ./Scripts/run-tests.sh update-check-test
+          ./Scripts/fork-gate-tests.sh
 
   # Holds the signing key and can read the repository, but cannot write to it. It builds third-party
   # sources, so it first refuses anything that could run a script of its own.

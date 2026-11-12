@@ -36,6 +36,19 @@ extensions, too.
 
 Questions and bug reports: [open an issue](https://github.com/amryadam/tinycast/issues). <!-- FORK(repo-readme) -->
 
+## What this fork adds <!-- FORK(repo-readme) -->
+
+Each feature has its own page with what it does, the files it touches, how it is tested and how to remove it.
+
+| Feature | What it does |
+|---|---|
+| [Path search](docs/fork/path-suffix.md) | Type part of a path, such as `dev/Tinycast/Features/Updates/UI/UpdatePill.swift`, and the launcher finds the file that path ends at. |
+| [Pasted paths](docs/fork/path-query.md) | Paste the full path of a file or folder into the launcher and it appears as the first Files row. |
+| [In-app updates](docs/fork/fork-update.md) | The fork is its own update channel: a new release shows in the update pill and installs at the next relaunch. |
+| [Upstream sync](docs/fork/fork-sync.md) | Each new upstream release is merged automatically, conflicts are resolved by Claude in an isolated job, and the result is checked before it is released. |
+| [Builds and releases](docs/fork/fork-release.md) | GitHub builds, signs and publishes the fork, and Homebrew installs it. |
+| [Own identity](docs/fork/fork-identity.md) | The fork is its own app, Tinycast Fork, with its own bundle id and link scheme, so it installs beside the official Tinycast. |
+
 ## Install
 
 On an Apple silicon Mac with macOS 26 or newer:

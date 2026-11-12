@@ -45,9 +45,10 @@ grep -rn 'FORK(' Tinycast Tests Scripts
 
 1. Create a worktree on `feature/<name>` from `dev`.
 2. Write the code, preferring new files.
-3. Add `docs/fork/<name>.md` with a `| File |` table that lists every file the feature adds or edits.
-4. Run `./Scripts/fork-check.sh`.
-5. Merge into `dev` with `git merge --no-ff`.
+3. Add `docs/fork/<name>.md`, titled `# Feature: <name>`, with a `| File |` table that lists every file the feature adds or edits.
+4. Add one row for it to the table under *What this fork adds* in the root `README.md`, linking `docs/fork/<name>.md`. `fork-check` fails when a feature doc is not linked there.
+5. Run `./Scripts/fork-check.sh`.
+6. Merge into `dev` with `git merge --no-ff`.
 
 ## Fork infrastructure
 
