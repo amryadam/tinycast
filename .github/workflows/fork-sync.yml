@@ -479,7 +479,9 @@ jobs:
   # One issue, kept up to date, whenever any job above failed.
   notify:
     needs: [detect, merge, resolve, verify, push, release]
-    if: ${{ failure() }}
+    # A job cancelled by GitHub, for example when no macOS runner was free for 15 minutes, counts too;
+    # a run cancelled by hand does not, because !cancelled() is false for it.
+    if: ${{ !cancelled() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

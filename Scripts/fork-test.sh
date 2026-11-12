@@ -1226,7 +1226,9 @@ test_sync_workflow_static() {
     assert_contains "$release" "expected_sha"
     assert_contains "$release" "gh run watch"
     assert_contains "$release" "actions: write"
-    assert_contains "$notify" "if: \${{ failure() }}"
+    assert_contains "$notify" "contains(needs.*.result, 'failure')"
+    assert_contains "$notify" "contains(needs.*.result, 'cancelled')"
+    assert_contains "$notify" "!cancelled()"
     assert_contains "$notify" "issues: write"
 
     # No expression is spliced into a shell script, and no input is read outside env: or with:.

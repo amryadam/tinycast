@@ -99,7 +99,7 @@ gh workflow run fork-sync.yml --repo amryadam/tinycast --ref dev \
 - `dry_run` runs `detect`, `merge`, `resolve` and `verify`, and skips `push` and `release`.
 - `upstream_tag` is refused unless `dry_run` is on, so a beta merge can never reach `dev` or a release.
 - The candidate stays as the artifact `sync-candidate` for one day, so the resolution can be read.
-- If a rehearsal fails, the `notify` job opens or updates the usual failure issue.
+- If a rehearsal fails or a job is cancelled by GitHub (for example no macOS runner was free for 15 minutes), the `notify` job opens or updates the usual failure issue.
 
 ## Limits
 
