@@ -41,15 +41,20 @@ enum FileSearchPathFragment {
         return zip(folders, fragment.folders).allSatisfy { FileSearchQuery.fold(String($0)) == $1 }
     }
 
+    /// How many name matches are fetched before the path narrows them. The ordinary search keeps 200,
+    /// which a name found in many places would fill with other folders' files.
+    static let candidateLimit = 20_000
+
     /// The matches for a partial path, found by searching for its file name, or nil when `query` is
-    /// not a partial path and the ordinary search should run.
+    /// not a partial path and the ordinary search should run. `search` is given the name query and
+    /// how many matches to return.
     static func results(
-        for query: String, search: (FileSearchQuery.Prepared) -> [FileSearchResult]
+        for query: String, search: (FileSearchQuery.Prepared, Int) -> [FileSearchResult]
     ) -> [FileSearchResult]? {
         guard let fragment = parse(query), let prepared = FileSearchQuery.prepare(fragment.name) else {
             return nil
         }
-        return search(prepared).filter { matches($0.id, fragment) }
+        return search(prepared, candidateLimit).filter { matches($0.id, fragment) }
     }
 
     // One matching pair, as a copied path or a shell argument carries.

@@ -26,9 +26,13 @@ struct FileSearchFragmentTests {
             "work/dev/Tinycast/Features/Updates/Model/UpdatePill.swift",
             "work/dev/Résumé/Docs/cv.pdf",
             "work/dev/node_modules/pkg/UpdatePill.swift",
+            "work/dev/Tinycast/Common.swift",
         ] {
             try write(root.appending(path: file))
         }
+        // The same file name in more places than the index keeps (it keeps its best 200), all
+        // ranking ahead of the wanted file: shorter paths win a tie.
+        for number in 0..<300 { try write(root.appending(path: "f/d\(number)/Common.swift")) }
         let policy = FileSearchPolicy(
             scopes: [root.path], ignorePatterns: ["node_modules"], homeDirectory: root)
         let index = FileIndex()
@@ -65,6 +69,7 @@ struct FileSearchFragmentTests {
         await check("pkg/UpdatePill.swift", [], "an ignored folder stays ignored")
         await check("UpdatePill", [target, forkSync, model], "an ordinary name still searches by name alone")
         await check("\"dev/Tinycast/Features/Updates/UI/UpdatePill.swift\"", [target], "a quoted path works")
+        await check("dev/Tinycast/Common.swift", ["work/dev/Tinycast/Common.swift"], "a name found in more than 200 places still finds the typed path")
 
         print(failures == 0 ? "File search fragment tests passed" : "\(failures) file search fragment tests failed")
         exit(failures == 0 ? 0 : 1)

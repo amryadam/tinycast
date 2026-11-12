@@ -260,24 +260,28 @@ struct FileSearchPathTests {
         let other = path("/x/fork-sync/Tinycast/UI/UpdatePill.swift")
         let plain = path("/x/UpdatePill.swift")
         var asked: [[String]] = []
-        let found = FileSearchPathFragment.results(for: "dev/Tinycast/UI/UpdatePill.swift") { prepared in
+        var limits: [Int] = []
+        let found = FileSearchPathFragment.results(for: "dev/Tinycast/UI/UpdatePill.swift") { prepared, limit in
             asked.append(prepared.terms.map { String(decoding: $0, as: UTF8.self) })
+            limits.append(limit)
             return [other, hit, plain]
         }
         expect(found == [hit], "only the file under the typed path is kept")
         expect(asked == [["updatepill.swift"]], "the search is for the file name alone, asked once")
+        expect(limits == [FileSearchPathFragment.candidateLimit], "it asks for far more than the ordinary 200")
+        expect(FileSearchPathFragment.candidateLimit > 10 * FileSearchQuery.resultLimit, "the candidate limit is well above the ordinary one")
 
         var calls = 0
-        let ordinary = FileSearchPathFragment.results(for: "UpdatePill") { _ in
+        let ordinary = FileSearchPathFragment.results(for: "UpdatePill") { _, _ in
             calls += 1
             return [hit]
         }
         expect(ordinary == nil, "ordinary text is left to the ordinary search")
         expect(calls == 0, "and asks the index nothing")
 
-        let none = FileSearchPathFragment.results(for: "dev/Nothing/UpdatePill.swift") { _ in [hit, other] }
+        let none = FileSearchPathFragment.results(for: "dev/Nothing/UpdatePill.swift") { _, _ in [hit, other] }
         expect(none == [], "a partial path that fits nothing finds nothing, rather than falling back")
-        let order = FileSearchPathFragment.results(for: "Tinycast/UI/UpdatePill.swift") { _ in [other, hit] }
+        let order = FileSearchPathFragment.results(for: "Tinycast/UI/UpdatePill.swift") { _, _ in [other, hit] }
         expect(order == [other, hit], "the index's order is kept")
     }
 
