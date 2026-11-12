@@ -423,11 +423,16 @@ jobs:
       - name: Decide
         id: decide
         run: |
-          LAST_TAG="$(git tag -l 'v*-fork.*' | sort -V | tail -n1)"
-          if [ -z "$LAST_TAG" ]; then
-            echo "::error::There is no previous fork release to compare with."
+          # The last release that was really published with both its files, not the highest tag: a tag
+          # left behind by a failed publish must not hide the need for a release.
+          LAST_TAG="$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" | ./Scripts/fork-last-release.sh)" || {
+            echo "::error::There is no complete fork release to compare with."
             exit 1
-          fi
+          }
+          git rev-parse --verify --quiet "refs/tags/$LAST_TAG^{commit}" > /dev/null || {
+            echo "::error::The release $LAST_TAG has no tag in this clone."
+            exit 1
+          }
           DECISION="$(./Scripts/fork-sync-decide.sh "$LAST_TAG" HEAD)"
           echo "decision=$DECISION" >> "$GITHUB_OUTPUT"
           echo "dev_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
