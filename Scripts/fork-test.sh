@@ -1241,51 +1241,84 @@ test_sync_decide() {
         fail "Scripts/fork-sync-decide.sh is missing or not executable"
         return
     }
-    decide() { (cd "$d" && "$script" last dev 2> /dev/null); }
-    make_sync_repo "$d"
-    (cd "$d" && gitq checkout -q dev && gitq tag last)
-    [ "$(decide)" = skip ] || fail "no new commits should be skip"
+    decide() { (cd "$1" && "$script" last dev 2> /dev/null); }
+    # fresh DIR: a repository tagged `last` on dev, ready for commits on dev
+    fresh() { make_sync_repo "$1" && (cd "$1" && gitq checkout -q dev && gitq tag last); }
+    # merge DIR [TRAILER]: a commit the way the sync writes its merges, on dev's own line
+    merge() { (cd "$1" && if [ -n "${2:-}" ]; then gitq commit --allow-empty -qm "Merge upstream into dev" -m "$2"; else gitq commit --allow-empty -qm "Merge upstream into dev"; fi); }
+
+    fresh "$d"
+    [ "$(decide "$d")" = skip ] || fail "no new commits should be skip"
     on_branch "$d" dev bash -c 'echo x >> docs/fork/x.md; echo y >> website/index.md; mkdir -p docs && echo z > docs/new.md'
-    [ "$(decide)" = skip ] || fail "docs and website only should be skip"
+    [ "$(decide "$d")" = skip ] || fail "docs and website only should be skip"
     on_branch "$d" dev bash -c 'echo x >> Tinycast/Core.swift'
-    [ "$(decide)" = release ] || fail "an app change should be release"
-    (cd "$d" && gitq commit --allow-empty -qm "Merge" -m "Resolved-by: claude")
-    [ "$(decide)" = hold ] || fail "a Claude-resolved merge should be hold"
-    # A merge Claude's review had concerns about is held too, with its own trailer.
-    make_sync_repo "$d-rv"
-    (cd "$d-rv" && gitq checkout -q dev && gitq tag last)
+    # The fork's own commits never start a release: only a merge of upstream does.
+    [ "$(decide "$d")" = skip ] || fail "a change of our own with no upstream merge must be skip"
+    merge "$d"
+    [ "$(decide "$d")" = release ] || fail "an upstream merge with an app change should be release"
+
+    # Our own scripts and workflows are not a reason to release, with or without an app change.
+    fresh "$d-own"
+    on_branch "$d-own" dev bash -c 'echo x >> Scripts/fork-x.sh; echo y >> .github/workflows/ours.yml'
+    [ "$(decide "$d-own")" = skip ] || fail "pipeline changes alone must be skip"
+
+    # An upstream merge that only touches docs and website is not a release either.
+    fresh "$d-site"
+    on_branch "$d-site" dev bash -c 'echo y >> website/index.md'
+    merge "$d-site"
+    [ "$(decide "$d-site")" = skip ] || fail "an upstream merge of website changes only should be skip"
+
+    # A merge subject that is not exactly the sync's does not count, and neither does one on upstream's side.
+    fresh "$d-subj"
+    on_branch "$d-subj" dev bash -c 'echo x >> Tinycast/Core.swift'
+    (cd "$d-subj" && gitq commit --allow-empty -qm "Merge upstream into dev (by hand)")
+    [ "$(decide "$d-subj")" = skip ] || fail "a different subject must not count as an upstream merge"
+    fresh "$d-side"
+    on_branch "$d-side" up bash -c 'echo x >> Tinycast/Core.swift'
+    (cd "$d-side" && gitq checkout -q up && gitq commit --allow-empty -qm "Merge upstream into dev" && gitq checkout -q dev \
+        && gitq merge -q --no-ff up -m "Merge pull request from upstream")
+    [ "$(decide "$d-side")" = skip ] || fail "a commit with the sync's subject on upstream's side must not count"
+
+    # A merge Claude resolved, or reviewed with concerns, is held.
+    fresh "$d-r"
+    on_branch "$d-r" dev bash -c 'echo x >> Tinycast/Core.swift'
+    merge "$d-r" "Resolved-by: claude"
+    [ "$(decide "$d-r")" = hold ] || fail "a Claude-resolved merge should be hold"
+    fresh "$d-rv"
     on_branch "$d-rv" dev bash -c 'echo x >> Tinycast/Core.swift'
-    [ "$(cd "$d-rv" && "$script" last dev)" = release ] || fail "an app change with no trailer should be release"
-    (cd "$d-rv" && gitq commit --allow-empty -qm "Merge upstream into dev" -m "Review-concerns: claude")
-    [ "$(cd "$d-rv" && "$script" last dev)" = hold ] || fail "a merge with review concerns should be hold"
+    merge "$d-rv"
+    [ "$(decide "$d-rv")" = release ] || fail "an app change with no trailer should be release"
+    merge "$d-rv" "Review-concerns: claude"
+    [ "$(decide "$d-rv")" = hold ] || fail "a merge with review concerns should be hold"
     # Only these two trailers hold, and only with the value claude.
-    make_sync_repo "$d-rv2"
-    (cd "$d-rv2" && gitq checkout -q dev && gitq tag last)
+    fresh "$d-rv2"
     on_branch "$d-rv2" dev bash -c 'echo x >> Tinycast/Core.swift'
-    (cd "$d-rv2" && gitq commit --allow-empty -qm "Merge" -m "Review-concerns: none")
-    [ "$(cd "$d-rv2" && "$script" last dev)" = release ] || fail "another value must not hold"
-    (cd "$d-rv2" && gitq commit --allow-empty -qm "Merge" -m "Some-other: claude")
-    [ "$(cd "$d-rv2" && "$script" last dev)" = release ] || fail "another trailer must not hold"
+    merge "$d-rv2" "Review-concerns: none"
+    [ "$(decide "$d-rv2")" = release ] || fail "another value must not hold"
+    merge "$d-rv2" "Some-other: claude"
+    [ "$(decide "$d-rv2")" = release ] || fail "another trailer must not hold"
+
     # grep -q must not make git's output a failed pipe: a long trailer list is more than a pipe holds.
-    make_sync_repo "$d-big"
-    (cd "$d-big" && gitq checkout -q dev && gitq tag last)
+    fresh "$d-big"
     on_branch "$d-big" dev bash -c 'echo x >> Tinycast/Core.swift'
-    (cd "$d-big" && { printf 'Merge\n\n'; awk 'BEGIN { for (i = 0; i < 40000; i++) print "Resolved-by: claude" }'; } > "$WORK/big-msg" && gitq commit --allow-empty -qF "$WORK/big-msg")
-    [ "$(cd "$d-big" && "$script" last dev)" = hold ] || fail "a Claude-resolved merge with a very long trailer block should be hold"
+    (cd "$d-big" && { printf 'Merge upstream into dev\n\n'; awk 'BEGIN { for (i = 0; i < 40000; i++) print "Resolved-by: claude" }'; } > "$WORK/big-msg" && gitq commit --allow-empty -qF "$WORK/big-msg")
+    [ "$(decide "$d-big")" = hold ] || fail "a Claude-resolved merge with a very long trailer block should be hold"
+
     # A look-alike directory counts as code.
-    make_sync_repo "$d-2"
-    (cd "$d-2" && gitq checkout -q dev && gitq tag last)
+    fresh "$d-2"
     on_branch "$d-2" dev bash -c 'mkdir -p docs-evil && echo x > docs-evil/x'
-    (cd "$d-2" && [ "$("$script" last dev)" = release ]) || fail "docs-evil/ must count as code"
-    make_sync_repo "$d-3"
-    (cd "$d-3" && gitq checkout -q dev && gitq tag last)
+    merge "$d-2"
+    [ "$(decide "$d-2")" = release ] || fail "docs-evil/ must count as code"
+    fresh "$d-3"
     on_branch "$d-3" dev bash -c 'mkdir -p website2 && echo x > website2/x'
-    (cd "$d-3" && [ "$("$script" last dev)" = release ]) || fail "website2/ must count as code"
-    # A path with a newline in it, and a docs/.. trick, count as code.
-    make_sync_repo "$d-4"
-    (cd "$d-4" && gitq checkout -q dev && gitq tag last)
+    merge "$d-3"
+    [ "$(decide "$d-3")" = release ] || fail "website2/ must count as code"
+    # A path with a newline in it counts as code.
+    fresh "$d-4"
     on_branch "$d-4" dev bash -c "printf x > \$'docs/a\nb'"
-    (cd "$d-4" && [ "$("$script" last dev)" != skip ]) || fail "a docs path with a newline must not hide a change"
+    merge "$d-4"
+    [ "$(decide "$d-4")" != skip ] || fail "a docs path with a newline must not hide a change"
+
     # A missing tag is an error, never a silent skip.
     (cd "$d" && "$script" nosuchtag dev > /dev/null 2>&1) && fail "accepted a missing tag"
     "$script" > /dev/null 2>&1 && fail "accepted no arguments"

@@ -31,6 +31,11 @@ A prerelease or beta tag is ignored, because only upstream's latest stable relea
 | `release` | the workflow token | Starts `Fork release` for the verified commit and waits for it, or says why not. |
 | `notify` | the workflow token | Opens one issue when any job failed. |
 
+A release starts only after a merge of upstream, never because of the fork's own commits.
+`fork-sync-decide.sh` looks for a merge on `dev`'s own line, since the last release, whose subject is exactly `Merge upstream into dev`, and which changed something outside `docs/` and `website/`.
+The fork's scripts, workflows and features reach the app with the next upstream release, or when you start `Fork release` by hand.
+A failed release is still tried again the next day, because that merge is still newer than the last release.
+
 A release starts automatically after a clean merge that Claude's review found nothing in.
 The release waits, and one issue says so with the review's findings, in two cases:
 
@@ -76,7 +81,7 @@ Why the jobs are split:
 | `Scripts/fork-next-version.sh` | Chooses the next `MAJOR.MINOR.PATCH-fork.N`, always above every existing fork tag. |
 | `Scripts/fork-sync-merge.sh` | Merges upstream into `dev`, keeps `.github/` exactly as `dev` has it, and saves a conflicted merge for resolution. |
 | `Scripts/fork-sync-verify-tree.sh` | Refuses any candidate merge that is not exactly what git computes, apart from the conflicted files. |
-| `Scripts/fork-sync-decide.sh` | Says `skip`, `hold` or `release` for the changes since the last fork tag. |
+| `Scripts/fork-sync-decide.sh` | Says `skip`, `hold` or `release`: release needs a merge of upstream since the last fork tag, and hold applies when that merge was resolved or reviewed with concerns by Claude. |
 | `Scripts/fork-gate-tests.sh` | Runs the fork's own Swift harnesses and upstream's update harnesses, found by name so an upstream rename needs no change. A fork harness missing from the registry is an error. |
 | `Scripts/fork-check-build-inputs.sh` | Refuses a tree with a script build phase, a package, a scheme action, a replaced compiler or tool, a compiler plugin, a custom build rule, an external project, a symlinked build input, or paths that differ only by case. |
 | `Scripts/fork-last-release.sh` | Prints the last fork release that is published and carries both its files, so a tag left by a failed publish cannot hide the need for a release. |
