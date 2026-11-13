@@ -41,6 +41,7 @@ Revision 3, written without a separate spec at the user's request. Revision 2 fo
 | 11 | A new release must satisfy the previous release's designated requirement before it is published. | A regenerated signing identity would otherwise lock every installed copy out of updates. |
 | 15 | Only an upstream release is merged: the commit of upstream's latest published release, found with the releases API. The commits between releases are ignored. | The user wants to follow releases, not every commit. A release is also the commit upstream's own checks and tests covered. |
 | 16 | Every merge candidate, clean or resolved, is read by a read-only Claude review. Anything but a clear `ok` adds the trailer `Review-concerns: claude` in the push job, which holds the release exactly as `Resolved-by: claude` does. | A merge git calls clean can still break the fork: an API a fork hook calls was renamed, or upstream changed the updater, signing or build. The review's own failure must not let a release through. |
+| 17 | The fork's own commits never start a release: only a merge of upstream does (a first-parent commit since the last release with the exact subject `Merge upstream into dev`). | The first scheduled run released `fork.5` for a change to workflow files alone, which is not what was asked: releases follow upstream's releases, not every commit. |
 | 12 | The daily schedule starts only when the repository variable `FORK_SYNC_SCHEDULE` is `on`. | It is switched on after the first manual run and the user's check of the pill. |
 
 ## Global constraints
