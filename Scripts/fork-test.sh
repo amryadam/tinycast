@@ -1297,6 +1297,11 @@ test_sync_decide() {
     [ "$(decide "$d-rv2")" = release ] || fail "another value must not hold"
     merge "$d-rv2" "Some-other: claude"
     [ "$(decide "$d-rv2")" = release ] || fail "another trailer must not hold"
+    # A review that raised concerns is only recorded, as Review-noted, and does not hold.
+    fresh "$d-rn"
+    on_branch "$d-rn" dev bash -c 'echo x >> Tinycast/Core.swift'
+    merge "$d-rn" "Review-noted: claude"
+    [ "$(decide "$d-rn")" = release ] || fail "a Review-noted merge must not hold"
 
     # grep -q must not make git's output a failed pipe: a long trailer list is more than a pipe holds.
     fresh "$d-big"
@@ -1428,7 +1433,9 @@ test_sync_workflow_static() {
     assert_contains "$review" "sync-review"
     # Only the push job, which runs no merged code, writes the trailer, so the model cannot forge or drop it.
     assert_contains "$push" "REVIEW_VERDICT"
-    assert_contains "$push" '--trailer "Review-concerns: claude"'
+    assert_contains "$push" 'TRAILER="Review-concerns: claude"'
+    assert_contains "$push" 'TRAILER="Review-noted: claude"'
+    assert_contains "$review" 'VERDICT=failed'
     assert_contains "$push" "interpret-trailers"
     assert_contains "$release" "sync-review"
     grep -Eq 'needs: \[detect, merge, resolve, review, verify\]' <<< "$push" || fail "the push job must wait for the review"

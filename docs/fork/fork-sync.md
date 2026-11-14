@@ -27,7 +27,7 @@ A prerelease or beta tag is ignored, because only upstream's latest stable relea
 | `resolve` | the Claude token only | Only after a conflict. Upstream's own tool configuration (`.mcp.json`, `.claude/`, `CLAUDE.md`, git hooks) is moved out of the tree first. Claude edits files with `--permission-mode acceptEdits` and file tools only, and its instructions say to merge and nothing else (see below). A workflow step, not the model, stages only the paths git reported as conflicted and writes the merge commit with the trailer `Resolved-by: claude`. |
 | `review` | the Claude token only | Reads the merge candidate, clean or resolved, and looks for what a merge git calls clean can still break: a fork hook that no longer fits upstream's code, a change to the updater, build, signing or packaging, or anything that looks malicious or privacy-hostile. It can only read (Read, Glob, Grep), and answers with a structured verdict. |
 | `verify` | nothing | Re-checks that the candidate is a faithful merge, then runs the gate, the fork's and the updater's Swift tests, and an unsigned build on the merged code. The whole upstream suite is not run, because a few of its tests depend on the fonts and locale of the machine. |
-| `push` | the GitHub token only | Runs no merged code. It re-checks the candidate, adds the trailer `Review-concerns: claude` when the review did not answer a clear "ok", and fast-forwards `dev`. The fork's `main` is not touched. |
+| `push` | the GitHub token only | Runs no merged code. It re-checks the candidate, adds the trailer `Review-concerns: claude` when the review gave no usable answer, or `Review-noted: claude` when it answered with concerns, and fast-forwards `dev`. The fork's `main` is not touched. |
 | `release` | the workflow token | Starts `Fork release` for the verified commit and waits for it, or says why not. |
 | `notify` | the workflow token | Opens one issue when any job failed. |
 
@@ -36,13 +36,17 @@ A release starts only after a merge of upstream, never because of the fork's own
 The fork's scripts, workflows and features reach the app with the next upstream release, or when you start `Fork release` by hand.
 A failed release is still tried again the next day, because that merge is still newer than the last release.
 
-A release starts automatically after a clean merge that Claude's review found nothing in.
+A release starts automatically after a merge that Claude did not have to resolve and whose review gave a usable answer, whether that answer was ok or concerns.
 The release waits, and one issue says so with the review's findings, in two cases:
 
 - Claude resolved a conflict in the merge (trailer `Resolved-by: claude`).
-- Claude's review had concerns, did not finish, or gave no usable answer (trailer `Review-concerns: claude`).
+- Claude's review did not finish or gave no usable answer (trailer `Review-concerns: claude`).
 
-In both cases the merge still lands on `dev`, because a model-written resolution or an unreviewed change would otherwise be installed by the in-app updater on a Mac where the app holds Accessibility and Full Disk Access.
+A review that finished and raised concerns does not hold the release.
+The merge is marked `Review-noted: claude` and the findings stay in the run's `sync-review` artifact for two days.
+The review prompt carries the upstream developer's note about the bundle id bridge release, so the expected move to `com.abueammar.tinycast` is not reported on its own.
+
+In both held cases the merge still lands on `dev`, because a model-written resolution or an unreviewed change would otherwise be installed by the in-app updater on a Mac where the app holds Accessibility and Full Disk Access.
 Start `Fork release` by hand after reading the merge.
 The review fails closed: only the exact verdict `ok` lets the release go on, so a crashed or confused review holds it.
 The trailers are written by workflow steps that run no merged code, never by the model.
@@ -82,7 +86,7 @@ Why the jobs are split:
 | `Scripts/fork-next-version.sh` | Chooses the next `MAJOR.MINOR.PATCH-fork.N`, always above every existing fork tag. |
 | `Scripts/fork-sync-merge.sh` | Merges upstream into `dev`, keeps `.github/` exactly as `dev` has it, and saves a conflicted merge for resolution. |
 | `Scripts/fork-sync-verify-tree.sh` | Refuses any candidate merge that is not exactly what git computes, apart from the conflicted files. |
-| `Scripts/fork-sync-decide.sh` | Says `skip`, `hold` or `release`: release needs a merge of upstream since the last fork tag, and hold applies when that merge was resolved or reviewed with concerns by Claude. |
+| `Scripts/fork-sync-decide.sh` | Says `skip`, `hold` or `release`: release needs a merge of upstream since the last fork tag, and hold applies when that merge was resolved by Claude or its review gave no usable answer. |
 | `Scripts/fork-gate-tests.sh` | Runs the fork's own Swift harnesses and upstream's update harnesses, found by name so an upstream rename needs no change. A fork harness missing from the registry is an error. |
 | `Scripts/fork-check-build-inputs.sh` | Refuses a tree with a script build phase, a package, a scheme action, a replaced compiler or tool, a compiler plugin, a custom build rule, an external project, a symlinked build input, or paths that differ only by case. |
 | `Scripts/fork-last-release.sh` | Prints the last fork release that is published and carries both its files, so a tag left by a failed publish cannot hide the need for a release. |
