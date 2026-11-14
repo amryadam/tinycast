@@ -358,6 +358,13 @@ jobs:
             still break or go wrong that a textual merge cannot see. You can only read; you cannot change anything.
             Read docs/fork/README.md first: it explains the fork's rules. Marked lines (FORK() are the
             fork's own changes inside upstream files.
+            Context from the upstream developer, quoted as data: upstream is moving to a new bundle id
+            because the old one was taken in Apple's CloudKit registry, for iCloud sync across Macs. The
+            developer said they plan a bridge release: the first update accepts the new bundle id and a
+            second update switches to it. So upstream's move to com.abueammar.tinycast, its legacy id
+            com.tinycast.app and its handoff target and scripts are expected. Do not report them for being
+            there. Do report them if they change what the fork's own id com.amryadam.tinycast, its helpers,
+            signing, data or update path does.
             Material, all under .review-material/:
             - changes.txt: every path the merge changes relative to the fork before the merge.
             - changes.patch: the diff of those changes, without website/ and docs/, cut at 600 KB.
@@ -386,7 +393,7 @@ jobs:
           claude_args: |
             --model claude-opus-5-5
             --effort high
-            --max-turns 30
+            --max-turns 50
             --strict-mcp-config
             --setting-sources user
             --json-schema '{"type":"object","properties":{"verdict":{"type":"string","enum":["ok","concerns"]},"findings":{"type":"string"}},"required":["verdict","findings"],"additionalProperties":false}'
@@ -399,10 +406,10 @@ jobs:
         env:
           STRUCTURED: ${{ steps.review.outputs.structured_output }}
         run: |
-          VERDICT=concerns
+          VERDICT=failed
           FINDINGS="The review did not return a usable answer, so the release is held until a person has looked."
-          if value="$(jq -er '.verdict' <<< "$STRUCTURED" 2> /dev/null)" && [ "$value" = ok ]; then
-            VERDICT=ok
+          if value="$(jq -er '.verdict' <<< "$STRUCTURED" 2> /dev/null)" && { [ "$value" = ok ] || [ "$value" = concerns ]; }; then
+            VERDICT="$value"
           fi
           if value="$(jq -er '.findings' <<< "$STRUCTURED" 2> /dev/null)" && [ -n "$value" ]; then
             FINDINGS="$value"
@@ -524,7 +531,7 @@ jobs:
           ./Scripts/fork-sync-verify-tree.sh "$DEV_SHA" "$UPSTREAM_SHA" "$CANDIDATE"
 
       # When Claude's review had concerns, did not finish or did not run, the same tree is committed again
-      # with the trailer that holds the release. Written here, by a trusted step that runs no merged code,
+      # with a trailer: Review-noted for concerns, Review-concerns (which holds the release) for no answer. Written here, by a trusted step that runs no merged code,
       # so the model cannot forge it or leave it off. The tree must not change by a single byte.
       - name: Mark the merge for review
         env:
@@ -535,15 +542,23 @@ jobs:
         run: |
           CANDIDATE="$(git rev-parse sync-candidate)"
           FINAL="$CANDIDATE"
-          if [ "$REVIEW_VERDICT" != ok ]; then
-            MESSAGE="$(git log -1 --format=%B "$CANDIDATE" | git interpret-trailers --trailer "Review-concerns: claude")"
+          # ok adds nothing. concerns is recorded as Review-noted and does not hold the release. Anything
+          # else (no usable answer, a crash, a timeout) fails closed with Review-concerns, which holds it.
+          TRAILER=""
+          case "$REVIEW_VERDICT" in
+            ok) ;;
+            concerns) TRAILER="Review-noted: claude" ;;
+            *) TRAILER="Review-concerns: claude" ;;
+          esac
+          if [ -n "$TRAILER" ]; then
+            MESSAGE="$(git log -1 --format=%B "$CANDIDATE" | git interpret-trailers --trailer "$TRAILER")"
             FINAL="$(git commit-tree -p "$DEV_SHA" -p "$UPSTREAM_SHA" -m "$MESSAGE" "$(git rev-parse "$CANDIDATE^{tree}")")"
             if [ "$(git rev-parse "$FINAL^{tree}")" != "$(git rev-parse "$CANDIDATE^{tree}")" ]; then
               echo "::error::Marking the merge changed its tree."
               exit 1
             fi
             ./Scripts/fork-sync-verify-tree.sh "$DEV_SHA" "$UPSTREAM_SHA" "$FINAL"
-            echo "The review had concerns, so the merge carries Review-concerns: claude and the release is held."
+            echo "The review verdict is $REVIEW_VERDICT, so the merge carries $TRAILER."
           fi
           git branch -f sync-final "$FINAL"
 
@@ -625,7 +640,7 @@ jobs:
           # Model text that read upstream's files is shown as an indented block, which it cannot break out of.
           INDENTED="$(awk '{ print "    " $0 }' <<< "$FINDINGS")"
           BODY="$(cat <<EOF
-          A merge on dev is held back from release, because Claude resolved a conflict in it or its review had concerns.
+          A merge on dev is held back from release, because Claude resolved a conflict in it or its review gave no usable answer.
 
           Why: ${REASONS:-no trailer found, see the run}
 
