@@ -31,6 +31,10 @@ changed=$({
     git -c core.quotePath=off diff --name-only --no-renames "$MERGE_BASE"
     git -c core.quotePath=off ls-files --others --exclude-standard
 } | sort -u)
+# The sync pins .github/ to dev's copy (see docs/fork/fork-sync.md), so after an upstream release
+# that edits its own workflows or templates, every upstream-owned file there differs from BASE
+# without being a fork change. Only the fork's own workflows, .github/workflows/fork-*, stay checked.
+changed=$(grep -vE '^\.github/' <<< "$changed"; grep -E '^\.github/workflows/fork-' <<< "$changed")
 # Rows of the tables headed `| File |`, each starting with a backticked path: | `path` | ...
 listed=$(awk '
     /^\| File \|/ { inside = 1; next }

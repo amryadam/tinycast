@@ -71,6 +71,7 @@ Why the jobs are split:
 - The two Claude jobs read untrusted upstream text, so they can write nothing to the repository and hold no GitHub token. The review cannot even edit files.
 - The job that holds the GitHub token runs only trusted scripts, and re-checks the candidate itself.
 - Any workflow file on `dev` could name the signing environment and read the key, so upstream's `.github/` never lands.
+- `fork-check.sh` ignores `.github/` except `.github/workflows/fork-*`, because those files are pinned to `dev` and differ from upstream whenever upstream edits its own workflows or templates. Without this the gate fails on every release that does.
 - The fork's `main` is not mirrored from upstream, because that would copy upstream's workflow files onto a branch where they are active. Upstream is fetched directly where it is needed.
 - `Fork release` runs the checks and Swift tests in a `gate` job with no secret. The job that holds the signing key first refuses a project with a script build phase, a package reference, a scheme action or a case-colliding path (`fork-check-build-inputs.sh`).
 
