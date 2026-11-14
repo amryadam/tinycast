@@ -97,9 +97,9 @@ struct ForkUpdateTests {
         expect(fork.accepts(prerelease: false), "the fork takes releases")
         expect(!fork.accepts(prerelease: true), "the fork never takes a prerelease")
 
-        expect(ReleaseChannel(bundleID: "com.tinycast.app") == .stable, "stable is unchanged")
-        expect(ReleaseChannel(bundleID: "com.tinycast.app.beta") == .beta, "beta is unchanged")
-        expect(ReleaseChannel(bundleID: "com.tinycast.app.dev") == .development, "dev is unchanged")
+        expect(ReleaseChannel(bundleID: "com.abueammar.tinycast") == .stable, "stable is unchanged")
+        expect(ReleaseChannel(bundleID: "com.abueammar.tinycast.beta") == .beta, "beta is unchanged")
+        expect(ReleaseChannel(bundleID: "com.abueammar.tinycast.dev") == .development, "dev is unchanged")
         expect(ReleaseChannel(bundleID: "com.amryadam.tinycast.dev") == .development, "the fork's dev id stays local")
         expect(ReleaseChannel(bundleID: nil) == .development, "no bundle id never updates")
         expect(!ReleaseChannel.development.updatesItself, "a local build still does not update itself")
